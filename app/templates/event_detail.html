@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  {% if not event %}
+    <h2>Event Not Found</h2>
+  {% else %}
+    <div class="panel-header">
+      <h2>Event #{{ event.id }}</h2>
+      <span class="panel-sub">TCA {{ event.tca }}</span>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3>Conjunction</h3>
+        <p>Satellite {{ event.satellite_id }} vs {{ space_object.name if space_object else 'Object' }}</p>
+        <p>Type: {{ space_object.object_type if space_object else '-' }}</p>
+        <p>Status: <span class="pill {{ event.status }}">{{ event.status }}</span></p>
+        <p>Miss distance: {{ "%.3f"|format(event.miss_distance) }} km</p>
+        <p>Relative velocity: {{ "%.3f"|format(event.relative_velocity) }} km/s</p>
+        <form class="form compact" method="post" action="/events-ui/{{ event.id }}/status">
+          <div class="form-row">
+            <label>Update Status</label>
+            <select name="status">
+              <option value="open" {% if event.status == 'open' %}selected{% endif %}>open</option>
+              <option value="in_review" {% if event.status == 'in_review' %}selected{% endif %}>in_review</option>
+              <option value="closed" {% if event.status == 'closed' %}selected{% endif %}>closed</option>
+            </select>
+          </div>
+          <button class="primary" type="submit">Update</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Risk</h3>
+        {% if risk %}
+          <div class="risk-score">Risk score: {{ "%.2f"|format(risk.risk_score) }}</div>
+          <div class="risk-bar">
+            <span style="width: {{ risk.risk_score * 100 }}%"></span>
+          </div>
+          <ul class="risk-list">
+            {% for key, value in risk.components_json.items() %}
+              <li>{{ key }}: {{ "%.2f"|format(value) }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>No risk assessment available.</p>
+        {% endif %}
+      </div>
+      <div class="card">
+        <h3>Decision</h3>
+        {% if decision %}
+          <p>Action: {{ decision.action }}</p>
+          <p>Approved by: {{ decision.approved_by }}</p>
+          <p>Primary driver: {{ decision.decision_driver or '-' }}</p>
+          <p>Assumptions: {{ decision.assumption_notes or '-' }}</p>
+          <p>Override reason: {{ decision.override_reason or '-' }}</p>
+        {% else %}
+          <p>No decision recorded yet.</p>
+        {% endif %}
+      </div>
+      <div class="card">
+        <h3>Runbook</h3>
+        {% if runbook %}
+          <p class="panel-sub">{{ runbook.template_name }}</p>
+          <ol class="runbook">
+            {% for step in runbook.steps_json %}
+              <li>{{ step }}</li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <p>No runbook available.</p>
+        {% endif %}
+      </div>
+      <div class="card">
+        <h3>Log Decision</h3>
+        <form class="form compact" method="post" action="/events-ui/{{ event.id }}/decide">
+          <div class="form-row">
+            <label>Action</label>
+            <select name="action">
+              <option value="do_nothing">do_nothing</option>
+              <option value="maneuver">maneuver</option>
+              <option value="monitor">monitor</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Approved By</label>
+            <input type="text" name="approved_by" placeholder="ops@example.com" required />
+          </div>
+          <div class="form-row">
+            <label>Primary Risk Driver</label>
+            <input type="text" name="decision_driver" placeholder="collision_probability" />
+          </div>
+          <div class="form-row">
+            <label>Assumptions</label>
+            <textarea name="assumption_notes" rows="2"></textarea>
+          </div>
+          <div class="form-row">
+            <label>Override Reason (if any)</label>
+            <textarea name="override_reason" rows="2"></textarea>
+          </div>
+          <div class="form-row">
+            <label>Decision Checklist</label>
+            <div class="checkboxes">
+              <label><input type="checkbox" name="checklist" value="latest_ephemeris" /> Latest ephemeris verified</label>
+              <label><input type="checkbox" name="checklist" value="delta_v_checked" /> Delta‑V checked</label>
+              <label><input type="checkbox" name="checklist" value="coordination_done" /> Coordination completed</label>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Rationale</label>
+            <textarea name="rationale_text" rows="3"></textarea>
+          </div>
+          <button class="primary" type="submit">Save Decision</button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-subsection">
+      <h3>Recommended Maneuvers</h3>
+      <div class="table">
+        <div class="table-row header">
+          <span>Delta-V</span>
+          <span>Window Start</span>
+          <span>Window End</span>
+          <span>Risk After</span>
+          <span>Fuel Cost</span>
+        </div>
+        {% for option in maneuvers %}
+        <div class="table-row">
+          <span>{{ "%.3f"|format(option.delta_v) }}</span>
+          <span>{{ option.time_window_start }}</span>
+          <span>{{ option.time_window_end }}</span>
+          <span>{{ "%.2f"|format(option.risk_after) }}</span>
+          <span>{{ "%.2f"|format(option.fuel_cost) }}</span>
+        </div>
+        {% else %}
+        <div class="table-row empty">No maneuvers generated.</div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Widgets/widgets.css"
+  />
+{% endblock %}
+
+{% block content %}
+<div class="globe-shell">
+  <section class="globe-stage">
+    <div class="globe-banner">
+      Public TLEs are for visualization only and are not suitable for operational collision avoidance.
+    </div>
+    <div id="cesiumContainer" class="globe-canvas"></div>
+    <div class="globe-status">
+      <div id="globeStatus">Loading catalog objects…</div>
+      <div id="globeCounts" class="globe-counts"></div>
+    </div>
+  </section>
+
+  <aside class="globe-panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Object Inspector</div>
+        <div class="panel-sub">Click any object to view metadata and status.</div>
+      </div>
+    </div>
+
+    <div id="globeInfo" class="globe-info">
+      <div class="empty-state">Click a satellite or use search to view details.</div>
+    </div>
+
+    <div class="globe-controls">
+      <label class="control-label" for="globeSearch">Search</label>
+      <div class="globe-search">
+        <input
+          id="globeSearch"
+          type="text"
+          placeholder="Name or NORAD ID"
+          autocomplete="off"
+        />
+        <button id="globeSearchBtn" class="btn-primary" type="button">Go</button>
+      </div>
+      <div class="globe-actions">
+        <button id="globeResetBtn" class="secondary" type="button">Reset View</button>
+        <button id="globeZoomInBtn" class="secondary" type="button">Zoom In</button>
+        <button id="globeZoomOutBtn" class="secondary" type="button">Zoom Out</button>
+      </div>
+
+      <div class="globe-toggles">
+        <label>
+          <input id="toggleCatalog" type="checkbox" checked />
+          Catalog objects
+        </label>
+        <label>
+          <input id="toggleOperator" type="checkbox" checked />
+          Operator assets
+        </label>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Cesium.js"></script>
+<script src="/static/globe.js"></script>
+{% endblock %}

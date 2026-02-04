@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <h2>Conjunction Triage</h2>
+    <span class="panel-sub">Queues and filters</span>
+  </div>
+  <div class="notice">
+    Public TLE data is for awareness only and not suitable for operational conjunction assessment. Objects with catalog IDs > 99999 are skipped due to TLE limitations.
+  </div>
+
+  <div class="presets">
+    <span class="preset-label">Queues</span>
+    {% for name, query in presets.items() %}
+      <a class="preset" href="/events-ui?{{ query }}">{{ name }}</a>
+    {% endfor %}
+  </div>
+
+  <form class="filters" method="get" action="/events-ui">
+    <div class="filter-group">
+      <label>Status</label>
+      <select name="status">
+        <option value="">All</option>
+        <option value="open" {% if filters.status == 'open' %}selected{% endif %}>Open</option>
+        <option value="in_review" {% if filters.status == 'in_review' %}selected{% endif %}>In Review</option>
+        <option value="closed" {% if filters.status == 'closed' %}selected{% endif %}>Closed</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Risk Band</label>
+      <select name="risk_band">
+        <option value="">All</option>
+        <option value="high" {% if filters.risk_band == 'high' %}selected{% endif %}>High</option>
+        <option value="medium" {% if filters.risk_band == 'medium' %}selected{% endif %}>Medium</option>
+        <option value="low" {% if filters.risk_band == 'low' %}selected{% endif %}>Low</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Window</label>
+      <select name="window">
+        <option value="">Any</option>
+        <option value="24h" {% if filters.window == '24h' %}selected{% endif %}>24h</option>
+        <option value="72h" {% if filters.window == '72h' %}selected{% endif %}>72h</option>
+        <option value="7d" {% if filters.window == '7d' %}selected{% endif %}>7d</option>
+      </select>
+    </div>
+    <button class="primary" type="submit">Apply</button>
+  </form>
+
+  <div class="saved-presets" id="saved-presets">
+    <span class="preset-label">Saved Presets</span>
+    <button class="secondary" type="button" id="save-preset">Save Current</button>
+    <div class="preset-list" id="preset-list"></div>
+  </div>
+
+  <div class="split">
+    <div class="pane-left">
+      <div class="table">
+        <div class="table-row header triage">
+          <span>Event</span>
+          <span>Status</span>
+          <span>TCA (hrs)</span>
+          <span>Risk</span>
+          <span>Band</span>
+          <span>Object</span>
+          <span>Type</span>
+          <span>Miss (km)</span>
+        </div>
+        {% for item in events %}
+        <a class="table-row triage" href="/events-ui?{% if filter_query %}{{ filter_query }}&{% endif %}event_id={{ item.event.id }}">
+          <span>#{{ item.event.id }}</span>
+          <span class="pill {{ item.event.status }}">{{ item.event.status }}</span>
+          <span>{{ "%.1f"|format(item.time_to_tca_hours) }}</span>
+          <span>{{ "%.2f"|format(item.risk_score or 0) }}</span>
+          <span class="pill {{ item.risk_band or 'unknown' }}">{{ item.risk_band or 'unknown' }}</span>
+          <span>{{ item.object_name or '-' }}</span>
+          <span>{{ item.object_type or '-' }}</span>
+          <span>{{ "%.3f"|format(item.event.miss_distance) }}</span>
+        </a>
+        {% else %}
+        <div class="table-row empty">No events yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="pane-right">
+      {% if not selected %}
+        <div class="empty-state">
+          Select an event from the triage queue to review details and log a decision.
+        </div>
+      {% else %}
+        <div class="detail-header">
+          <div>
+            <h3>Event #{{ selected.id }}</h3>
+            <p class="panel-sub">TCA {{ selected.tca }}</p>
+          </div>
+          <form method="post" action="/events-ui/{{ selected.id }}/status">
+            <select name="status">
+              <option value="open" {% if selected.status == 'open' %}selected{% endif %}>open</option>
+              <option value="in_review" {% if selected.status == 'in_review' %}selected{% endif %}>in_review</option>
+              <option value="closed" {% if selected.status == 'closed' %}selected{% endif %}>closed</option>
+            </select>
+            <button class="secondary" type="submit">Update Status</button>
+          </form>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h4>Conjunction</h4>
+            <p>Satellite {{ selected.satellite_id }} vs {{ selected_object.name if selected_object else 'Object' }}</p>
+            <p>Type: {{ selected_object.object_type if selected_object else '-' }}</p>
+            <p>Miss distance: {{ "%.3f"|format(selected.miss_distance) }} km</p>
+            <p>Relative velocity: {{ "%.3f"|format(selected.relative_velocity) }} km/s</p>
+          </div>
+          <div class="card">
+            <h4>Risk</h4>
+            {% if selected_risk %}
+              <div class="risk-score">Risk score: {{ "%.2f"|format(selected_risk.risk_score) }}</div>
+              <div class="risk-bar">
+                <span style="width: {{ selected_risk.risk_score * 100 }}%"></span>
+              </div>
+              <ul class="risk-list">
+                {% for key, value in selected_risk.components_json.items() %}
+                  <li>{{ key }}: {{ "%.2f"|format(value) }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p>No risk assessment available.</p>
+            {% endif %}
+          </div>
+          <div class="card">
+            <h4>Decision</h4>
+            {% if selected_decision %}
+              <p>Action: {{ selected_decision.action }}</p>
+              <p>Approved by: {{ selected_decision.approved_by }}</p>
+              <p>Primary driver: {{ selected_decision.decision_driver or '-' }}</p>
+              <p>Assumptions: {{ selected_decision.assumption_notes or '-' }}</p>
+              <p>Override reason: {{ selected_decision.override_reason or '-' }}</p>
+            {% else %}
+              <p>No decision recorded yet.</p>
+            {% endif %}
+          </div>
+          <div class="card">
+            <h4>Runbook</h4>
+            {% if selected_runbook %}
+              <p class="panel-sub">{{ selected_runbook.template_name }}</p>
+              <ol class="runbook">
+                {% for step in selected_runbook.steps_json %}
+                  <li>{{ step }}</li>
+                {% endfor %}
+              </ol>
+            {% else %}
+              <p>No runbook available.</p>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="panel-subsection">
+          <h4>Log Decision</h4>
+          <form class="form" method="post" action="/events-ui/{{ selected.id }}/decide">
+            <div class="form-row">
+              <label>Action</label>
+              <select name="action">
+                <option value="do_nothing">do_nothing</option>
+                <option value="maneuver">maneuver</option>
+                <option value="monitor">monitor</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Approved By</label>
+              <input type="text" name="approved_by" placeholder="ops@example.com" required />
+            </div>
+            <div class="form-row">
+              <label>Primary Risk Driver</label>
+              <input type="text" name="decision_driver" placeholder="collision_probability" />
+            </div>
+            <div class="form-row">
+              <label>Assumptions</label>
+              <textarea name="assumption_notes" rows="2"></textarea>
+            </div>
+            <div class="form-row">
+              <label>Override Reason (if any)</label>
+              <textarea name="override_reason" rows="2"></textarea>
+            </div>
+            <div class="form-row">
+              <label>Decision Checklist</label>
+              <div class="checkboxes">
+                <label><input type="checkbox" name="checklist" value="latest_ephemeris" /> Latest ephemeris verified</label>
+                <label><input type="checkbox" name="checklist" value="delta_v_checked" /> Delta‑V checked</label>
+                <label><input type="checkbox" name="checklist" value="coordination_done" /> Coordination completed</label>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>Rationale</label>
+              <textarea name="rationale_text" rows="3"></textarea>
+            </div>
+            <button class="primary" type="submit">Save Decision</button>
+          </form>
+        </div>
+
+        <div class="panel-subsection">
+          <h4>Recommended Maneuvers</h4>
+          <div class="table">
+            <div class="table-row header">
+              <span>Delta-V</span>
+              <span>Window Start</span>
+              <span>Window End</span>
+              <span>Risk After</span>
+              <span>Fuel Cost</span>
+            </div>
+            {% for option in selected_maneuvers %}
+            <div class="table-row">
+              <span>{{ "%.3f"|format(option.delta_v) }}</span>
+              <span>{{ option.time_window_start }}</span>
+              <span>{{ option.time_window_end }}</span>
+              <span>{{ "%.2f"|format(option.risk_after) }}</span>
+              <span>{{ "%.2f"|format(option.fuel_cost) }}</span>
+            </div>
+            {% else %}
+            <div class="table-row empty">No maneuvers generated.</div>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<script>
+  const saveButton = document.getElementById('save-preset');
+  const presetList = document.getElementById('preset-list');
+  const form = document.querySelector('form.filters');
+
+  function loadPresets() {
+    presetList.innerHTML = '';
+    const presets = JSON.parse(localStorage.getItem('savedPresets') || '[]');
+    presets.forEach((preset, idx) => {
+      const link = document.createElement('a');
+      link.href = `/events-ui?${preset.query}`;
+      link.textContent = preset.label;
+      link.className = 'preset';
+      presetList.appendChild(link);
+    });
+  }
+
+  saveButton?.addEventListener('click', () => {
+    const data = new FormData(form);
+    const params = new URLSearchParams();
+    for (const [key, value] of data.entries()) {
+      if (value) params.append(key, value);
+    }
+    const label = prompt('Preset name:', 'My preset');
+    if (!label) return;
+    const presets = JSON.parse(localStorage.getItem('savedPresets') || '[]');
+    presets.push({ label, query: params.toString() });
+    localStorage.setItem('savedPresets', JSON.stringify(presets));
+    loadPresets();
+  });
+
+  loadPresets();
+</script>
+{% endblock %}

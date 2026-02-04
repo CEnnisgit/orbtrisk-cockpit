@@ -1,0 +1,189 @@
+from datetime import datetime
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Boolean,
+    Text,
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.types import JSON
+
+from app.database import Base
+
+
+class Source(Base):
+    __tablename__ = "sources"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    type = Column(String(64), nullable=False)
+    provenance_uri = Column(String(512), nullable=True)
+    license_terms = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SpaceObject(Base):
+    __tablename__ = "space_objects"
+
+    id = Column(Integer, primary_key=True)
+    norad_cat_id = Column(Integer, nullable=True)
+    name = Column(String(256), nullable=False)
+    object_type = Column(String(64), nullable=True)
+    international_designator = Column(String(64), nullable=True)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
+    is_operator_asset = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    source = relationship("Source")
+
+
+class Satellite(Base):
+    __tablename__ = "satellites"
+
+    id = Column(Integer, primary_key=True)
+    operator_id = Column(String(64), nullable=True)
+    name = Column(String(128), nullable=False)
+    catalog_id = Column(String(64), nullable=True)
+    orbit_regime = Column(String(32), nullable=False, default="LEO")
+    status = Column(String(32), nullable=False, default="active")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    orbit_states = relationship("OrbitState", back_populates="satellite")
+
+
+class OrbitState(Base):
+    __tablename__ = "orbit_states"
+
+    id = Column(Integer, primary_key=True)
+    satellite_id = Column(Integer, ForeignKey("satellites.id"), nullable=True)
+    space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=True)
+    epoch = Column(DateTime, nullable=False)
+    state_vector = Column(JSON, nullable=False)
+    covariance = Column(JSON, nullable=True)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=False)
+    confidence = Column(Float, nullable=False, default=0.5)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    satellite = relationship("Satellite", back_populates="orbit_states")
+    space_object = relationship("SpaceObject")
+    source = relationship("Source")
+
+
+class TleRecord(Base):
+    __tablename__ = "tle_records"
+
+    id = Column(Integer, primary_key=True)
+    space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=False)
+    line1 = Column(String(256), nullable=False)
+    line2 = Column(String(256), nullable=False)
+    epoch = Column(DateTime, nullable=False)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
+    ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    raw_text = Column(Text, nullable=False)
+
+    space_object = relationship("SpaceObject")
+    source = relationship("Source")
+
+
+class ConjunctionEvent(Base):
+    __tablename__ = "conjunction_events"
+
+    id = Column(Integer, primary_key=True)
+    satellite_id = Column(Integer, ForeignKey("satellites.id"), nullable=False)
+    object_id = Column(Integer, nullable=True)
+    space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=True)
+    tca = Column(DateTime, nullable=False)
+    miss_distance = Column(Float, nullable=False)
+    relative_velocity = Column(Float, nullable=False)
+    screening_volume = Column(Float, nullable=False)
+    status = Column(String(32), nullable=False, default="open")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    satellite = relationship("Satellite")
+    space_object = relationship("SpaceObject")
+
+
+class RiskAssessment(Base):
+    __tablename__ = "risk_assessments"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False)
+    poc = Column(Float, nullable=False)
+    risk_score = Column(Float, nullable=False)
+    components_json = Column(JSON, nullable=False)
+    sensitivity_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    event = relationship("ConjunctionEvent")
+
+
+class ManeuverOption(Base):
+    __tablename__ = "maneuver_options"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False)
+    delta_v = Column(Float, nullable=False)
+    time_window_start = Column(DateTime, nullable=False)
+    time_window_end = Column(DateTime, nullable=False)
+    risk_after = Column(Float, nullable=False)
+    fuel_cost = Column(Float, nullable=False)
+    is_recommended = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    event = relationship("ConjunctionEvent")
+
+
+class Decision(Base):
+    __tablename__ = "decisions"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False)
+    action = Column(String(64), nullable=False)
+    approved_by = Column(String(128), nullable=False)
+    approved_at = Column(DateTime, nullable=False)
+    rationale_text = Column(Text, nullable=True)
+    decision_driver = Column(String(128), nullable=True)
+    assumption_notes = Column(Text, nullable=True)
+    override_reason = Column(Text, nullable=True)
+    checklist_json = Column(JSON, nullable=True)
+    status_after = Column(String(32), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    event = relationship("ConjunctionEvent")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True)
+    entity_type = Column(String(64), nullable=False)
+    entity_id = Column(Integer, nullable=False)
+    hash = Column(String(128), nullable=False)
+    prev_hash = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WebhookSubscription(Base):
+    __tablename__ = "webhook_subscriptions"
+
+    id = Column(Integer, primary_key=True)
+    url = Column(String(512), nullable=False)
+    event_type = Column(String(64), nullable=False, default="event.created")
+    secret = Column(String(128), nullable=True)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Runbook(Base):
+    __tablename__ = "runbooks"
+
+    id = Column(Integer, primary_key=True)
+    risk_band = Column(String(32), nullable=False)
+    template_name = Column(String(128), nullable=False)
+    steps_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

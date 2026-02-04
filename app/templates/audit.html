@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <h2>Audit Log</h2>
+    <span class="panel-sub">Immutable, hash‑chained records</span>
+  </div>
+
+  <form class="filters" method="get" action="/audit-ui">
+    <div class="filter-group">
+      <label>Event ID</label>
+      <input type="number" name="event_id" value="{{ filters.event_id or '' }}" />
+    </div>
+    <div class="filter-group">
+      <label>Start Date</label>
+      <input type="date" name="start_date" value="{{ filters.start_date or '' }}" />
+    </div>
+    <div class="filter-group">
+      <label>End Date</label>
+      <input type="date" name="end_date" value="{{ filters.end_date or '' }}" />
+    </div>
+    <button class="primary" type="submit">Apply</button>
+  </form>
+
+  <div class="table">
+    <div class="table-row header">
+      <span>ID</span>
+      <span>Entity</span>
+      <span>Hash</span>
+      <span>Prev Hash</span>
+      <span>Created</span>
+    </div>
+    {% for ctx in entries %}
+    <details class="table-row detail">
+      <summary>
+        <span>{{ ctx.entry.id }}</span>
+        <span>{{ ctx.entry.entity_type }}:{{ ctx.entry.entity_id }}</span>
+        <span>{{ ctx.entry.hash[:12] }}</span>
+        <span>{{ ctx.entry.prev_hash[:12] if ctx.entry.prev_hash else '-' }}</span>
+        <span>{{ ctx.entry.created_at }}</span>
+      </summary>
+      {% if ctx.decision %}
+      <div class="detail-body">
+        <h4>Decision Context</h4>
+        <p>Action: {{ ctx.decision.action }} | Approved by: {{ ctx.decision.approved_by }}</p>
+        <p>Driver: {{ ctx.decision.decision_driver or '-' }} | Assumptions: {{ ctx.decision.assumption_notes or '-' }}</p>
+        <p>Override: {{ ctx.decision.override_reason or '-' }}</p>
+        {% if ctx.event %}
+          <p>Event #{{ ctx.event.id }} | TCA {{ ctx.event.tca }} | Miss {{ "%.3f"|format(ctx.event.miss_distance) }} km</p>
+        {% endif %}
+        {% if ctx.risk %}
+          <p>Risk score: {{ "%.2f"|format(ctx.risk.risk_score) }}</p>
+        {% endif %}
+        {% if ctx.maneuvers %}
+          <ul class="risk-list">
+            {% for m in ctx.maneuvers[:3] %}
+              <li>ΔV {{ "%.3f"|format(m.delta_v) }} | Risk after {{ "%.2f"|format(m.risk_after) }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+      {% endif %}
+    </details>
+    {% else %}
+    <div class="table-row empty">No audit entries yet.</div>
+    {% endfor %}
+  </div>
+
+  <div class="export-links">
+    <a href="/audit/export?format=csv">Export CSV</a>
+    <a href="/audit/export?format=pdf">Export PDF</a>
+  </div>
+</section>
+{% endblock %}

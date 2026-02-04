@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+{% if request.query_params.get("seeded") %}
+
+<section class="notice">
+  Demo data seeded. View events below or in the Events tab.
+</section>
+{% endif %}
+{% if request.query_params.get("synced") %}
+<section class="notice">
+  Catalog sync completed. New objects are now available for screening.
+</section>
+{% endif %}
+<section class="hero">
+  <div>
+    <h1>Fleet Risk Snapshot</h1>
+    <p>Operationally defensible decisions, with explainability baked in.</p>
+  </div>
+  <div class="hero-card">
+    <div class="metric">
+      <div class="metric-label">Satellites</div>
+      <div class="metric-value">{{ satellite_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Events</div>
+      <div class="metric-value">{{ event_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">High Risk</div>
+      <div class="metric-value">{{ high_risk }}</div>
+    </div>
+  </div>
+
+<div class="hero-actions">
+  <form method="post" action="/demo/seed">
+    <button class="primary" type="submit">Seed Demo Data</button>
+  </form>
+</div>
+
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>Catalog Sync</h2>
+    <span class="panel-sub">CelesTrak Active payloads</span>
+  </div>
+  <div class="catalog-grid">
+    <div>
+      <div class="metric-label">Catalog Objects</div>
+      <div class="metric-value">{{ catalog_count }}</div>
+    </div>
+    <div>
+      <div class="metric-label">Last Sync</div>
+      <div class="metric-value">{{ last_sync or 'Never' }}</div>
+    </div>
+    <form method="post" action="/catalog/sync-ui">
+      <button class="primary" type="submit">Sync Now</button>
+    </form>
+  </div>
+  <div class="notice">
+    Public TLE data is for awareness only and not suitable for operational conjunction assessment. Objects with catalog IDs > 99999 are skipped due to TLE limitations.
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>Recent Conjunction Events</h2>
+    <span class="panel-sub">Last 7 days</span>
+  </div>
+  <div class="table">
+    <div class="table-row header">
+      <span>Event ID</span>
+      <span>Satellite</span>
+      <span>Object</span>
+      <span>TCA</span>
+      <span>Miss Distance (km)</span>
+    </div>
+    {% for event in recent_events %}
+    <a class="table-row" href="/events-ui/{{ event.id }}">
+      <span>#{{ event.id }}</span>
+      <span>{{ event.satellite_id }}</span>
+      <span>{{ event.object_id }}</span>
+      <span>{{ event.tca }}</span>
+      <span>{{ "%.3f"|format(event.miss_distance) }}</span>
+    </a>
+    {% else %}
+    <div class="table-row empty">No events yet. Ingest orbit states to begin.</div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
