@@ -6,15 +6,18 @@ from fastapi import Depends, FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.routes import ingestion, satellites, events, decisions, audit, webhooks, catalog
+from app.api.routes import ingestion, satellites, events, decisions, audit, webhooks, catalog, ai, solar
 from app.database import get_db, init_db
 from app import models
 from app.services import demo, conjunction, risk, maneuver, propagation, catalog_sync
+from app.settings import settings
 
 app = FastAPI(title="Space Risk & Collision Avoidance MVP")
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.include_router(ingestion.router, tags=["ingestion"])
 app.include_router(satellites.router, tags=["satellites"])
@@ -23,6 +26,8 @@ app.include_router(decisions.router, tags=["decisions"])
 app.include_router(audit.router, tags=["audit"])
 app.include_router(webhooks.router, tags=["webhooks"])
 app.include_router(catalog.router, tags=["catalog"])
+app.include_router(ai.router, tags=["ai"])
+app.include_router(solar.router, tags=["solar"])
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -41,7 +46,7 @@ def on_startup():
     catalog_sync.start_scheduler()
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
     satellite_count = db.query(models.Satellite).count()
     event_count = db.query(models.ConjunctionEvent).count()
@@ -80,8 +85,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/catalog/sync-ui")
 def catalog_sync_ui(request: Request, db: Session = Depends(get_db)):
-    catalog_sync.sync_catalog(db)
-    return RedirectResponse(url="/?synced=1", status_code=303)
+    catalog_sync.sync_catalog(db, manual=True)
+    return RedirectResponse(url="/dashboard?synced=1", status_code=303)
 
 
 @app.get("/events-ui", response_class=HTMLResponse)
@@ -102,14 +107,43 @@ def events_ui(
         query = query.filter(models.ConjunctionEvent.tca <= cutoff)
     events = query.all()
 
+    # Batch-load latest RiskAssessment per event (fix N+1)
+    event_ids = [e.id for e in events]
+    risk_map: Dict[int, models.RiskAssessment] = {}
+    if event_ids:
+        latest_risk_subq = (
+            db.query(
+                models.RiskAssessment.event_id,
+                func.max(models.RiskAssessment.id).label("max_id"),
+            )
+            .filter(models.RiskAssessment.event_id.in_(event_ids))
+            .group_by(models.RiskAssessment.event_id)
+            .subquery()
+        )
+        latest_risks = (
+            db.query(models.RiskAssessment)
+            .join(latest_risk_subq, models.RiskAssessment.id == latest_risk_subq.c.max_id)
+            .all()
+        )
+        risk_map = {r.event_id: r for r in latest_risks}
+
+    # Batch-load SpaceObjects
+    so_ids = {e.space_object_id for e in events if e.space_object_id}
+    so_map: Dict[int, models.SpaceObject] = {}
+    if so_ids:
+        space_objects = db.query(models.SpaceObject).filter(models.SpaceObject.id.in_(so_ids)).all()
+        so_map = {so.id: so for so in space_objects}
+
+    # Batch-load Satellites for fallback object lookups
+    sat_ids = {e.object_id for e in events if e.object_id and not e.space_object_id}
+    sat_map: Dict[int, models.Satellite] = {}
+    if sat_ids:
+        sats = db.query(models.Satellite).filter(models.Satellite.id.in_(sat_ids)).all()
+        sat_map = {s.id: s for s in sats}
+
     items = []
     for event in events:
-        risk_assessment = (
-            db.query(models.RiskAssessment)
-            .filter(models.RiskAssessment.event_id == event.id)
-            .order_by(models.RiskAssessment.id.desc())
-            .first()
-        )
+        risk_assessment = risk_map.get(event.id)
         risk_score = risk_assessment.risk_score if risk_assessment else None
         band = None
         if risk_score is not None:
@@ -122,16 +156,14 @@ def events_ui(
         if risk_band:
             if risk_score is None or risk_band != band:
                 continue
-        space_object = None
+        space_object = so_map.get(event.space_object_id) if event.space_object_id else None
         object_name = None
         object_type = None
-        if event.space_object_id:
-            space_object = db.get(models.SpaceObject, event.space_object_id)
         if space_object:
             object_name = space_object.name
             object_type = space_object.object_type
         elif event.object_id:
-            other_sat = db.get(models.Satellite, event.object_id)
+            other_sat = sat_map.get(event.object_id)
             if other_sat:
                 object_name = other_sat.name
                 object_type = "operator"
@@ -225,11 +257,16 @@ def events_ui(
     )
 
 
-@app.get("/globe-ui", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse)
 def globe_ui(request: Request):
     return templates.TemplateResponse(
         "globe.html",
-        {"request": request, "title": "3D Globe"},
+        {
+            "request": request,
+            "title": "3D Globe",
+            "cesium_token": settings.cesium_ion_token or "",
+            "cesium_night_asset_id": settings.cesium_night_asset_id,
+        },
     )
 
 
@@ -294,7 +331,7 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
 async def seed_demo_data(db: Session = Depends(get_db)):
     demo.seed_demo(db)
     db.commit()
-    return RedirectResponse(url="/?seeded=1", status_code=303)
+    return RedirectResponse(url="/dashboard?seeded=1", status_code=303)
 
 
 

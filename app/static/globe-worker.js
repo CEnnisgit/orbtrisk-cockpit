@@ -5,6 +5,10 @@ importScripts("https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.mi
 let entries = [];
 let timer = null;
 let intervalMs = 2000;
+let virtualNowMs = null;
+let selectedId = null;
+let trailSpanMs = 90 * 60 * 1000;
+let trailStepMs = 5 * 60 * 1000;
 
 function buildEntries(objects) {
   entries = (objects || []).map((obj) => {
@@ -19,7 +23,7 @@ function buildEntries(objects) {
 
 function computePositions() {
   if (!entries.length) return;
-  const now = Date.now();
+  const now = virtualNowMs || Date.now();
   const when = new Date(now);
   const gmst = satellite.gstime(when);
   const positions = new Array(entries.length);
@@ -45,7 +49,33 @@ function computePositions() {
     };
   }
 
-  postMessage({ type: "positions", positions, timestamp: now });
+  let trail = [];
+  let groundTrack = [];
+  if (selectedId) {
+    const entry = entries.find((item) => item.id === selectedId);
+    if (entry && entry.satrec) {
+      const halfSpan = trailSpanMs / 2;
+      for (let offset = -halfSpan; offset <= halfSpan; offset += trailStepMs) {
+        const t = new Date(now + offset);
+        const pv = satellite.propagate(entry.satrec, t);
+        if (!pv.position) {
+          continue;
+        }
+        const tGmst = satellite.gstime(t);
+        const ecef = satellite.eciToEcf(pv.position, tGmst);
+        trail.push({ x: ecef.x * 1000, y: ecef.y * 1000, z: ecef.z * 1000 });
+        const geo = satellite.eciToGeodetic(pv.position, tGmst);
+        const groundEcf = satellite.geodeticToEcf({
+          longitude: geo.longitude,
+          latitude: geo.latitude,
+          height: 0,
+        });
+        groundTrack.push({ x: groundEcf.x * 1000, y: groundEcf.y * 1000, z: groundEcf.z * 1000 });
+      }
+    }
+  }
+
+  postMessage({ type: "positions", positions, trail, groundTrack, timestamp: now });
 }
 
 function startTimer() {
@@ -62,6 +92,16 @@ self.onmessage = (event) => {
     intervalMs = data.intervalMs || intervalMs;
     buildEntries(data.objects || []);
     startTimer();
+  }
+  if (data.type === "time") {
+    virtualNowMs = data.now || null;
+  }
+  if (data.type === "select") {
+    selectedId = data.objectId || null;
+  }
+  if (data.type === "settings") {
+    trailSpanMs = data.trailSpanMs || trailSpanMs;
+    trailStepMs = data.trailStepMs || trailStepMs;
   }
   if (data.type === "stop" && timer) {
     clearInterval(timer);

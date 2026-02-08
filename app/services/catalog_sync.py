@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 from sgp4.api import Satrec
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.database import SessionLocal
 from app.settings import settings
-from app.services import propagation, conjunction, risk, maneuver
+from app.services import propagation, conjunction, risk, maneuver, space_track_sync
 
 _scheduler_started = False
 
@@ -59,6 +59,15 @@ def _parse_tle_lines(raw_text: str) -> List[dict]:
     return parsed
 
 
+def _parse_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_satcat_csv(raw_text: str) -> Dict[int, dict]:
     metadata: Dict[int, dict] = {}
     reader = csv.DictReader(io.StringIO(raw_text))
@@ -70,10 +79,25 @@ def _parse_satcat_csv(raw_text: str) -> Dict[int, dict]:
             norad_id = int(norad_raw)
         except ValueError:
             continue
+        apogee = _parse_float(_get_row_value(row, "APOGEE", "APOGEE"))
+        perigee = _parse_float(_get_row_value(row, "PERIGEE", "PERIGEE"))
+        inclination = _parse_float(_get_row_value(row, "INCLINATION", "INCLINATION"))
+        period = _parse_float(_get_row_value(row, "PERIOD", "PERIOD"))
         metadata[norad_id] = {
             "name": _get_row_value(row, "OBJECT_NAME", "SATNAME", "OBJECT_NAME"),
             "object_type": _get_row_value(row, "OBJECT_TYPE", "OBJECT_TYPE", "OBJ_TYPE"),
             "int_des": _get_row_value(row, "INTL_DES", "INTL_DESIGNATOR", "INT_DES"),
+            "owner": _get_row_value(row, "OWNER", "OWNER"),
+            "ops_status_code": _get_row_value(row, "OPS_STATUS_CODE", "OPS_STATUS_CODE"),
+            "launch_date": _get_row_value(row, "LAUNCH_DATE", "LAUNCH_DATE"),
+            "decay_date": _get_row_value(row, "DECAY_DATE", "DECAY_DATE"),
+            "apogee_km": apogee,
+            "perigee_km": perigee,
+            "inclination_deg": inclination,
+            "period_min": period,
+            "rcs_size": _get_row_value(row, "RCS_SIZE", "RCS", "RCS_SIZE"),
+            "orbit_center": _get_row_value(row, "ORBIT_CENTER", "ORBIT_CENTER"),
+            "orbit_type": _get_row_value(row, "ORBIT_TYPE", "ORBIT_TYPE"),
         }
     return metadata
 
@@ -89,17 +113,31 @@ def _get_row_value(row: dict, *keys: str) -> Optional[str]:
     return None
 
 
-def _get_or_create_source(db: Session, name: str) -> models.Source:
+def _get_or_create_source(db: Session, name: str, source_type: str, provenance_uri: Optional[str]) -> models.Source:
     source = db.query(models.Source).filter(models.Source.name == name).first()
     if source:
+        if provenance_uri:
+            source.provenance_uri = provenance_uri
+        if source_type:
+            source.type = source_type
         return source
-    source = models.Source(name=name, type="public", provenance_uri="celestrak.org")
+    source = models.Source(name=name, type=source_type, provenance_uri=provenance_uri)
     db.add(source)
     db.flush()
     return source
 
 
-def sync_catalog(db: Session) -> dict:
+def _upsert_metadata(db: Session, space_object_id: int, meta: dict) -> None:
+    if not meta:
+        return
+    record = db.get(models.SpaceObjectMetadata, space_object_id)
+    if record:
+        record.satcat_json = meta
+    else:
+        db.add(models.SpaceObjectMetadata(space_object_id=space_object_id, satcat_json=meta))
+
+
+def _fetch_celestrak_texts() -> Tuple[str, str, str]:
     group = settings.celestrak_group
     gp_url = f"{settings.celestrak_gp_url}?GROUP={group}&FORMAT=tle"
     satcat_group = group.upper()
@@ -107,14 +145,37 @@ def sync_catalog(db: Session) -> dict:
 
     tle_text = _fetch_text(gp_url)
     satcat_text = _fetch_text(satcat_url)
+    return group, tle_text, satcat_text
 
-    _write_raw_text_snapshot("celestrak_tle", tle_text)
+
+def _fetch_best_tle_text(db: Session, manual: bool) -> Tuple[str, str, str, str]:
+    group, celestrak_tle, satcat_text = _fetch_celestrak_texts()
+    if not space_track_sync.has_credentials():
+        return group, celestrak_tle, satcat_text, f"celestrak-{group}"
+    if not manual and not space_track_sync.is_due(db):
+        return group, celestrak_tle, satcat_text, f"celestrak-{group}"
+    try:
+        jitter = None if manual else 720
+        space_tle = space_track_sync.fetch_tle_text(jitter_seconds=jitter)
+        return group, space_tle, satcat_text, space_track_sync.SPACE_TRACK_SOURCE
+    except Exception:
+        return group, celestrak_tle, satcat_text, f"celestrak-{group}"
+
+
+def sync_catalog(db: Session, manual: bool = False) -> dict:
+    group, tle_text, satcat_text, source_name = _fetch_best_tle_text(db, manual=manual)
+
+    raw_prefix = "space_track_tle" if source_name == space_track_sync.SPACE_TRACK_SOURCE else "celestrak_tle"
+    _write_raw_text_snapshot(raw_prefix, tle_text)
     _write_raw_text_snapshot("celestrak_satcat", satcat_text)
 
     satcat_meta = _parse_satcat_csv(satcat_text)
     tles = _parse_tle_lines(tle_text)
 
-    source = _get_or_create_source(db, f"celestrak-{group}")
+    if source_name == space_track_sync.SPACE_TRACK_SOURCE:
+        source = _get_or_create_source(db, source_name, "restricted", "space-track.org")
+    else:
+        source = _get_or_create_source(db, f"celestrak-{group}", "public", "celestrak.org")
 
     ingested = 0
     skipped = 0
@@ -184,6 +245,7 @@ def sync_catalog(db: Session) -> dict:
             raw_text=entry["raw"],
         )
         db.add(tle_record)
+        _upsert_metadata(db, space_object.id, meta)
 
         db.query(models.OrbitState).filter(models.OrbitState.space_object_id == space_object.id).delete(
             synchronize_session=False
@@ -270,6 +332,17 @@ def catalog_status(db: Session) -> dict:
     }
 
 
+def _quality_tier(source_name: Optional[str], tle_epoch: Optional[datetime]) -> Tuple[str, Optional[float]]:
+    if not tle_epoch:
+        return "D", None
+    age_hours = (datetime.utcnow() - tle_epoch).total_seconds() / 3600.0
+    if source_name == space_track_sync.SPACE_TRACK_SOURCE and age_hours <= 6:
+        return "A", age_hours
+    if age_hours <= 24:
+        return "B", age_hours
+    return "C", age_hours
+
+
 def catalog_objects(db: Session) -> dict:
     latest_tle = (
         db.query(
@@ -281,18 +354,22 @@ def catalog_objects(db: Session) -> dict:
     )
 
     rows = (
-        db.query(models.SpaceObject, models.TleRecord)
+        db.query(models.SpaceObject, models.TleRecord, models.Source, models.SpaceObjectMetadata)
         .join(latest_tle, latest_tle.c.space_object_id == models.SpaceObject.id)
         .join(
             models.TleRecord,
             (models.TleRecord.space_object_id == models.SpaceObject.id)
             & (models.TleRecord.epoch == latest_tle.c.max_epoch),
         )
+        .join(models.Source, models.TleRecord.source_id == models.Source.id)
+        .outerjoin(models.SpaceObjectMetadata, models.SpaceObjectMetadata.space_object_id == models.SpaceObject.id)
         .all()
     )
 
     items = []
-    for space_object, tle in rows:
+    for space_object, tle, source, metadata in rows:
+        meta = metadata.satcat_json if metadata else {}
+        tier, age_hours = _quality_tier(source.name if source else None, tle.epoch if tle else None)
         items.append(
             {
                 "id": space_object.id,
@@ -304,6 +381,20 @@ def catalog_objects(db: Session) -> dict:
                 "tle_line1": tle.line1,
                 "tle_line2": tle.line2,
                 "tle_epoch": tle.epoch.isoformat(),
+                "tle_source": source.name if source else None,
+                "tle_age_hours": age_hours,
+                "quality_tier": tier,
+                "owner": meta.get("owner"),
+                "ops_status_code": meta.get("ops_status_code"),
+                "launch_date": meta.get("launch_date"),
+                "decay_date": meta.get("decay_date"),
+                "apogee_km": meta.get("apogee_km"),
+                "perigee_km": meta.get("perigee_km"),
+                "inclination_deg": meta.get("inclination_deg"),
+                "period_min": meta.get("period_min"),
+                "rcs_size": meta.get("rcs_size"),
+                "orbit_center": meta.get("orbit_center"),
+                "orbit_type": meta.get("orbit_type"),
             }
         )
 
@@ -326,6 +417,10 @@ def catalog_object_detail(db: Session, object_id: int) -> Optional[dict]:
         .order_by(models.TleRecord.epoch.desc())
         .first()
     )
+    source = db.get(models.Source, tle.source_id) if tle else None
+    metadata = db.get(models.SpaceObjectMetadata, space_object.id)
+    meta = metadata.satcat_json if metadata else {}
+    tier, age_hours = _quality_tier(source.name if source else None, tle.epoch if tle else None)
 
     return {
         "id": space_object.id,
@@ -338,15 +433,36 @@ def catalog_object_detail(db: Session, object_id: int) -> Optional[dict]:
         "tle_line2": tle.line2 if tle else None,
         "tle_epoch": tle.epoch.isoformat() if tle else None,
         "has_tle": bool(tle),
+        "tle_source": source.name if source else None,
+        "tle_age_hours": age_hours,
+        "quality_tier": tier,
+        "owner": meta.get("owner"),
+        "ops_status_code": meta.get("ops_status_code"),
+        "launch_date": meta.get("launch_date"),
+        "decay_date": meta.get("decay_date"),
+        "apogee_km": meta.get("apogee_km"),
+        "perigee_km": meta.get("perigee_km"),
+        "inclination_deg": meta.get("inclination_deg"),
+        "period_min": meta.get("period_min"),
+        "rcs_size": meta.get("rcs_size"),
+        "orbit_center": meta.get("orbit_center"),
+        "orbit_type": meta.get("orbit_type"),
     }
 
 
 def sync_if_due(db: Session) -> Optional[dict]:
-    last_sync = db.query(func.max(models.TleRecord.ingested_at)).scalar()
+    if space_track_sync.has_credentials() and space_track_sync.is_due(db):
+        return sync_catalog(db, manual=False)
+    last_sync = (
+        db.query(func.max(models.TleRecord.ingested_at))
+        .join(models.Source, models.TleRecord.source_id == models.Source.id)
+        .filter(models.Source.name.like("celestrak-%"))
+        .scalar()
+    )
     if last_sync is None:
-        return sync_catalog(db)
+        return sync_catalog(db, manual=False)
     if datetime.utcnow() - last_sync >= timedelta(hours=settings.catalog_sync_hours):
-        return sync_catalog(db)
+        return sync_catalog(db, manual=False)
     return None
 
 
@@ -366,7 +482,8 @@ def start_scheduler():
                     pass
             finally:
                 db.close()
-            time.sleep(max(3600, settings.catalog_sync_hours * 3600))
+            min_hours = min(settings.catalog_sync_hours, settings.space_track_sync_hours)
+            time.sleep(max(3600, min_hours * 3600))
 
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()

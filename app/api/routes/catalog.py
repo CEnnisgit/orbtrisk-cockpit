@@ -9,7 +9,7 @@ router = APIRouter()
 
 @router.post("/catalog/sync")
 def sync_catalog(db: Session = Depends(get_db)):
-    return catalog_sync.sync_catalog(db)
+    return catalog_sync.sync_catalog(db, manual=True)
 
 
 @router.get("/catalog/status")

@@ -4,4 +4,6 @@ __pycache__/
 spaceops.db
 spaceops.db-journal
 data/raw/
+data/spice/
 .pytest_cache/
+.env

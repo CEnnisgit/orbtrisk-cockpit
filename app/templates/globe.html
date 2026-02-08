@@ -1,69 +1,131 @@
-{% extends "base.html" %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "OrbitRisk Viewer" }}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Widgets/widgets.css"
+    />
+  </head>
+  <body class="viewer-body">
 
-{% block head %}
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Widgets/widgets.css"
-  />
-{% endblock %}
+    <!-- Full-viewport Cesium canvas -->
+    <div id="cesiumContainer" class="viewer-canvas"></div>
 
-{% block content %}
-<div class="globe-shell">
-  <section class="globe-stage">
-    <div class="globe-banner">
-      Public TLEs are for visualization only and are not suitable for operational collision avoidance.
+    <!-- Floating pill nav (top-left) -->
+    <nav class="viewer-nav">
+      <div class="viewer-nav-brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">OrbitRisk</span>
+      </div>
+      <div class="viewer-nav-links">
+        <a href="/" class="active">Viewer</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/events-ui">Events</a>
+        <a href="/satellites-ui">Satellites</a>
+        <a href="/docs">API</a>
+      </div>
+    </nav>
+
+    <!-- Quality disclaimer banner (top-center) -->
+    <div class="viewer-banner">
+      Quality tiers reflect TLE source and age. This view is for situational awareness only.
     </div>
-    <div id="cesiumContainer" class="globe-canvas"></div>
-    <div class="globe-status">
-      <div id="globeStatus">Loading catalog objects…</div>
-      <div id="globeCounts" class="globe-counts"></div>
-    </div>
-  </section>
 
-  <aside class="globe-panel">
-    <div class="panel-header">
-      <div>
-        <div class="panel-title">Object Inspector</div>
-        <div class="panel-sub">Click any object to view metadata and status.</div>
+    <!-- Status overlay (bottom-left) -->
+    <div class="viewer-status">
+      <div id="globeStatus">Loading catalog objects&hellip;</div>
+      <div id="globeCounts" class="viewer-counts"></div>
+    </div>
+
+    <!-- Bottom controls bar -->
+    <div class="viewer-controls-bar">
+      <div class="viewer-bar-section">
+        <button id="modeEarth" class="mode-btn active" type="button">Earth Orbit</button>
+        <button id="modeSolar" class="mode-btn" type="button">Solar System</button>
+      </div>
+      <div class="viewer-bar-divider"></div>
+      <div class="viewer-bar-section viewer-bar-timeline">
+        <input id="timeScrubber" type="range" min="-720" max="720" step="5" value="0" />
+        <span id="timeLabel" class="timeline-label">Now</span>
+      </div>
+      <div class="viewer-bar-section">
+        <button id="timePlayBtn" class="secondary" type="button">Play</button>
+        <button id="timeNowBtn" class="secondary" type="button">Now</button>
+        <div class="rate-group">
+          <button class="rate-btn active" data-rate="1" type="button">1x</button>
+          <button class="rate-btn" data-rate="10" type="button">10x</button>
+          <button class="rate-btn" data-rate="60" type="button">60x</button>
+        </div>
       </div>
     </div>
 
-    <div id="globeInfo" class="globe-info">
-      <div class="empty-state">Click a satellite or use search to view details.</div>
-    </div>
+    <!-- Collapsible right panel -->
+    <aside id="viewerPanel" class="viewer-panel">
+      <button id="panelToggleBtn" class="viewer-panel-toggle" type="button" title="Toggle panel" aria-label="Toggle inspector panel">&rsaquo;</button>
 
-    <div class="globe-controls">
-      <label class="control-label" for="globeSearch">Search</label>
-      <div class="globe-search">
-        <input
-          id="globeSearch"
-          type="text"
-          placeholder="Name or NORAD ID"
-          autocomplete="off"
-        />
-        <button id="globeSearchBtn" class="btn-primary" type="button">Go</button>
+      <div class="viewer-panel-content">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">Object Inspector</div>
+            <div class="panel-sub">Click any object to view metadata and status.</div>
+          </div>
+        </div>
+
+        <div class="globe-view-toggles">
+          <label><input id="toggleFollow" type="checkbox" /> Follow</label>
+          <label><input id="toggleRide" type="checkbox" /> Ride-along</label>
+          <label><input id="toggleTrails" type="checkbox" checked /> Orbit trail</label>
+          <label><input id="toggleGroundTrack" type="checkbox" /> Ground track</label>
+          <label><input id="toggleFootprint" type="checkbox" /> Footprint</label>
+        </div>
+
+        <div id="globeInfo" class="globe-info">
+          <div class="empty-state">Click a satellite or use search to view details.</div>
+        </div>
+
+        <div class="globe-controls">
+          <label class="control-label" for="globeSearch">Search</label>
+          <div class="globe-search">
+            <input
+              id="globeSearch"
+              type="text"
+              placeholder="Name or NORAD ID"
+              autocomplete="off"
+            />
+            <button id="globeSearchBtn" class="btn-primary" type="button">Go</button>
+          </div>
+          <div class="globe-actions">
+            <button id="globeResetBtn" class="secondary" type="button">Reset View</button>
+            <button id="globeZoomInBtn" class="secondary" type="button">Zoom In</button>
+            <button id="globeZoomOutBtn" class="secondary" type="button">Zoom Out</button>
+          </div>
+
+          <div class="globe-toggles">
+            <label>
+              <input id="toggleCatalog" type="checkbox" checked />
+              Catalog objects
+            </label>
+            <label>
+              <input id="toggleOperator" type="checkbox" checked />
+              Operator assets
+            </label>
+          </div>
+        </div>
       </div>
-      <div class="globe-actions">
-        <button id="globeResetBtn" class="secondary" type="button">Reset View</button>
-        <button id="globeZoomInBtn" class="secondary" type="button">Zoom In</button>
-        <button id="globeZoomOutBtn" class="secondary" type="button">Zoom Out</button>
-      </div>
+    </aside>
 
-      <div class="globe-toggles">
-        <label>
-          <input id="toggleCatalog" type="checkbox" checked />
-          Catalog objects
-        </label>
-        <label>
-          <input id="toggleOperator" type="checkbox" checked />
-          Operator assets
-        </label>
-      </div>
-    </div>
-
-  </aside>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Cesium.js"></script>
-<script src="/static/globe.js"></script>
-{% endblock %}
+    <script src="https://cdn.jsdelivr.net/npm/cesium@1.114/Build/Cesium/Cesium.js"></script>
+    <script>
+      window.CESIUM_ION_TOKEN = "{{ cesium_token }}";
+      window.CESIUM_NIGHT_ASSET_ID = "{{ cesium_night_asset_id or '' }}";
+    </script>
+    <script src="/static/globe.js"></script>
+  </body>
+</html>

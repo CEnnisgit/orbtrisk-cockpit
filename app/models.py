@@ -31,8 +31,8 @@ class SpaceObject(Base):
     __tablename__ = "space_objects"
 
     id = Column(Integer, primary_key=True)
-    norad_cat_id = Column(Integer, nullable=True)
-    name = Column(String(256), nullable=False)
+    norad_cat_id = Column(Integer, nullable=True, index=True)
+    name = Column(String(256), nullable=False, index=True)
     object_type = Column(String(64), nullable=True)
     international_designator = Column(String(64), nullable=True)
     source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
@@ -40,6 +40,16 @@ class SpaceObject(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     source = relationship("Source")
+
+
+class SpaceObjectMetadata(Base):
+    __tablename__ = "space_object_metadata"
+
+    space_object_id = Column(Integer, ForeignKey("space_objects.id"), primary_key=True)
+    satcat_json = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    space_object = relationship("SpaceObject")
 
 
 class Satellite(Base):
@@ -78,7 +88,7 @@ class TleRecord(Base):
     __tablename__ = "tle_records"
 
     id = Column(Integer, primary_key=True)
-    space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=False)
+    space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=False, index=True)
     line1 = Column(String(256), nullable=False)
     line2 = Column(String(256), nullable=False)
     epoch = Column(DateTime, nullable=False)
@@ -97,11 +107,11 @@ class ConjunctionEvent(Base):
     satellite_id = Column(Integer, ForeignKey("satellites.id"), nullable=False)
     object_id = Column(Integer, nullable=True)
     space_object_id = Column(Integer, ForeignKey("space_objects.id"), nullable=True)
-    tca = Column(DateTime, nullable=False)
+    tca = Column(DateTime, nullable=False, index=True)
     miss_distance = Column(Float, nullable=False)
     relative_velocity = Column(Float, nullable=False)
     screening_volume = Column(Float, nullable=False)
-    status = Column(String(32), nullable=False, default="open")
+    status = Column(String(32), nullable=False, default="open", index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     satellite = relationship("Satellite")
@@ -112,7 +122,7 @@ class RiskAssessment(Base):
     __tablename__ = "risk_assessments"
 
     id = Column(Integer, primary_key=True)
-    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False)
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False, index=True)
     poc = Column(Float, nullable=False)
     risk_score = Column(Float, nullable=False)
     components_json = Column(JSON, nullable=False)

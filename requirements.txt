@@ -9,3 +9,4 @@ httpx==0.27.2
 fpdf2==2.7.9
 pytest==8.3.3
 sgp4==2.23
+spiceypy==6.0.0
