@@ -17,6 +17,9 @@ def setup_module():
 
 
 def test_ingest_and_event_flow():
+    # Seed a minimal catalog object so conjunction detection has something to screen against.
+    client.post("/demo/seed")
+
     payload_a = {
         "epoch": datetime.utcnow().isoformat(),
         "state_vector": [7000, 0, 0, 0, 7.5, 0],
@@ -40,10 +43,20 @@ def test_ingest_and_event_flow():
 
     events = client.get("/events")
     assert events.status_code == 200
-    assert len(events.json()) >= 1
+    data = events.json()
+    assert len(data) >= 1
+
+    # Basic PDF report endpoint smoke test.
+    event_id = data[0]["event"]["id"]
+    report = client.get(f"/events/{event_id}/report")
+    assert report.status_code == 200
+    assert "application/pdf" in report.headers.get("content-type", "")
 
 
 def test_decision_and_audit_export():
+    # Ensure at least one event exists for decision/audit flows.
+    client.post("/demo/seed")
+
     events = client.get("/events").json()
     event_id = events[0]["event"]["id"]
 
@@ -59,3 +72,43 @@ def test_decision_and_audit_export():
     export_resp = client.get("/audit/export?format=csv")
     assert export_resp.status_code == 200
     assert "text/csv" in export_resp.headers.get("content-type", "")
+
+
+def test_ingest_cdm_creates_event_with_geometry():
+    payload = {
+        "tca": datetime.utcnow().isoformat(),
+        "relative_position_km": [0.02, 0.0, 0.0],
+        "relative_velocity_km_s": [0.0, 0.01, 0.0],
+        "combined_pos_covariance_km2": [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        "hard_body_radius_m": 10.0,
+        "source": {"name": "cdm-test", "type": "public"},
+        "satellite": {"name": "Gamma", "orbit_regime": "LEO", "status": "active"},
+        "secondary_norad_cat_id": 424242,
+        "secondary_name": "TEST-OBJECT",
+    }
+    resp = client.post("/ingest/cdm", json=payload)
+    assert resp.status_code == 200
+    event_id = resp.json()["event_id"]
+
+    detail = client.get(f"/events/{event_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["geometry"] is not None
+    assert body["risk"] is not None
+
+
+def test_ui_pages_smoke():
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    resp = client.get("/events-ui")
+    assert resp.status_code == 200
+    resp = client.get("/satellites-ui")
+    assert resp.status_code == 200
+    resp = client.get("/ingest-ui")
+    assert resp.status_code == 200
+    resp = client.get("/catalog-ui")
+    assert resp.status_code == 200

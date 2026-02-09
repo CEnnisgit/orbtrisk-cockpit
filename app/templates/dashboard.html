@@ -13,8 +13,8 @@
 {% endif %}
 <section class="hero">
   <div>
-    <h1>Fleet Risk Snapshot</h1>
-    <p>Operationally defensible decisions, with explainability baked in.</p>
+    <h1>Safety Overview</h1>
+    <p>See upcoming close approaches, understand why they matter, and decide what to do next.</p>
   </div>
   <div class="hero-card">
     <div class="metric">
@@ -32,17 +32,46 @@
   </div>
 
 <div class="hero-actions">
-  <form method="post" action="/demo/seed">
-    <button class="primary" type="submit">Seed Demo Data</button>
-  </form>
+  <a class="primary" href="/events-ui">Review Alerts</a>
+  <a class="secondary" href="/ingest-ui">Add Data</a>
+  <a class="secondary" href="/satellites-ui">Add Satellite</a>
 </div>
 
 </section>
 
 <section class="panel">
   <div class="panel-header">
+    <h2>Start Here</h2>
+    <span class="panel-sub">A simple path for first-time users</span>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <h3>1. Add a Satellite</h3>
+      <p class="panel-sub">Create your fleet entry (name + optional NORAD catalog ID).</p>
+      <a class="secondary" href="/satellites-ui">Open Satellites</a>
+    </div>
+    <div class="card">
+      <h3>2. Add Tracking Data</h3>
+      <p class="panel-sub">Ingest orbit states or a CDM-like close approach message.</p>
+      <a class="secondary" href="/ingest-ui">Open Add Data</a>
+    </div>
+    <div class="card">
+      <h3>3. Review Alerts</h3>
+      <p class="panel-sub">See risk, recommended maneuvers, and export a PDF report.</p>
+      <a class="secondary" href="/events-ui">Open Alerts</a>
+    </div>
+  </div>
+  <div class="panel-subsection">
+    <form method="post" action="/demo/seed">
+      <button class="secondary" type="submit">Seed Demo Data</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
     <h2>Catalog Sync</h2>
-    <span class="panel-sub">CelesTrak Active payloads</span>
+    <span class="panel-sub">Public catalog (CelesTrak / Space-Track if configured)</span>
   </div>
   <div class="catalog-grid">
     <div>
@@ -58,7 +87,7 @@
     </form>
   </div>
   <div class="notice">
-    Public TLE data is for awareness only and not suitable for operational conjunction assessment. Objects with catalog IDs > 99999 are skipped due to TLE limitations.
+    Public orbit data is best-effort and is for awareness only. For operational decisions, use operator-grade ephemerides.
   </div>
 </section>
 

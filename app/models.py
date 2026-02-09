@@ -148,6 +148,34 @@ class ManeuverOption(Base):
     event = relationship("ConjunctionEvent")
 
 
+class EventGeometry(Base):
+    __tablename__ = "event_geometry"
+
+    # One geometry snapshot per event (at the computed TCA).
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), primary_key=True)
+    frame = Column(String(32), nullable=False, default="ECI")
+    relative_position_km = Column(JSON, nullable=False)
+    relative_velocity_km_s = Column(JSON, nullable=False)
+    combined_pos_covariance_km2 = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    event = relationship("ConjunctionEvent")
+
+
+class CdmRecord(Base):
+    __tablename__ = "cdm_records"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False, index=True)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
+    tca = Column(DateTime, nullable=False)
+    message_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    event = relationship("ConjunctionEvent")
+    source = relationship("Source")
+
+
 class Decision(Base):
     __tablename__ = "decisions"
 

@@ -40,7 +40,8 @@ def export_audit(format: str = "csv", db: Session = Depends(get_db)):
         for entry in entries:
             line = f"{entry.id} | {entry.entity_type}:{entry.entity_id} | {entry.hash[:12]} | {entry.created_at.isoformat()}"
             pdf.multi_cell(0, 6, line)
-        pdf_bytes = pdf.output(dest="S").encode("latin-1")
+        pdf_out = pdf.output(dest="S")
+        pdf_bytes = pdf_out.encode("latin-1") if isinstance(pdf_out, str) else bytes(pdf_out)
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",

@@ -288,8 +288,9 @@ def _generate_operator_events(db: Session) -> None:
 
     for state in latest_by_sat.values():
         events = conjunction.detect_events_for_state(db, state)
+        db.flush()
         for event in events:
-            sigma = propagation.extract_sigma(state.covariance)
+            sigma = getattr(event, "_sigma_km", propagation.extract_sigma(state.covariance))
             poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
             db.add(
                 models.RiskAssessment(
@@ -300,6 +301,18 @@ def _generate_operator_events(db: Session) -> None:
                     sensitivity_json=sensitivity,
                 )
             )
+            r_rel = getattr(event, "_r_rel_km", None)
+            v_rel = getattr(event, "_v_rel_km_s", None)
+            if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
+                db.merge(
+                    models.EventGeometry(
+                        event_id=event.id,
+                        frame="ECI",
+                        relative_position_km=r_rel,
+                        relative_velocity_km_s=v_rel,
+                        combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
+                    )
+                )
             options = maneuver.generate_options(event, risk_score)
             for option in options:
                 db.add(
@@ -403,6 +416,113 @@ def catalog_objects(db: Session) -> dict:
         "items": items,
         "total": total,
         "missing_tle": max(0, total - len(items)),
+    }
+
+
+def catalog_objects_page(
+    db: Session,
+    *,
+    q: Optional[str] = None,
+    is_operator_asset: Optional[bool] = None,
+    object_type: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Return a page of catalog objects, including latest TLE + SATCAT metadata when available.
+
+    This is intended for UI usage where loading the full catalog would be too heavy.
+    """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    obj_query = db.query(models.SpaceObject)
+    if is_operator_asset is not None:
+        obj_query = obj_query.filter(models.SpaceObject.is_operator_asset.is_(is_operator_asset))
+    if object_type:
+        obj_query = obj_query.filter(models.SpaceObject.object_type == object_type)
+    q_clean = (q or "").strip()
+    if q_clean:
+        if q_clean.isdigit():
+            norad = int(q_clean)
+            obj_query = obj_query.filter(
+                (models.SpaceObject.norad_cat_id == norad)
+                | (models.SpaceObject.name.ilike(f"%{q_clean}%"))
+            )
+        else:
+            obj_query = obj_query.filter(models.SpaceObject.name.ilike(f"%{q_clean}%"))
+
+    total_objects = obj_query.count()
+
+    latest_tle = (
+        db.query(
+            models.TleRecord.space_object_id,
+            func.max(models.TleRecord.epoch).label("max_epoch"),
+        )
+        .group_by(models.TleRecord.space_object_id)
+        .subquery()
+    )
+
+    rows_query = (
+        obj_query.join(latest_tle, latest_tle.c.space_object_id == models.SpaceObject.id)
+        .join(
+            models.TleRecord,
+            (models.TleRecord.space_object_id == models.SpaceObject.id)
+            & (models.TleRecord.epoch == latest_tle.c.max_epoch),
+        )
+        .join(models.Source, models.TleRecord.source_id == models.Source.id)
+        .outerjoin(models.SpaceObjectMetadata, models.SpaceObjectMetadata.space_object_id == models.SpaceObject.id)
+        .with_entities(models.SpaceObject, models.TleRecord, models.Source, models.SpaceObjectMetadata)
+    )
+
+    total_with_tle = rows_query.count()
+    rows = (
+        rows_query.order_by(models.SpaceObject.id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items = []
+    for space_object, tle, source, metadata in rows:
+        meta = metadata.satcat_json if metadata else {}
+        tier, age_hours = _quality_tier(source.name if source else None, tle.epoch if tle else None)
+        items.append(
+            {
+                "id": space_object.id,
+                "norad_cat_id": space_object.norad_cat_id,
+                "name": space_object.name,
+                "object_type": space_object.object_type,
+                "international_designator": space_object.international_designator,
+                "is_operator_asset": space_object.is_operator_asset,
+                "tle_line1": tle.line1,
+                "tle_line2": tle.line2,
+                "tle_epoch": tle.epoch.isoformat(),
+                "tle_source": source.name if source else None,
+                "tle_age_hours": age_hours,
+                "quality_tier": tier,
+                "owner": meta.get("owner"),
+                "ops_status_code": meta.get("ops_status_code"),
+                "launch_date": meta.get("launch_date"),
+                "decay_date": meta.get("decay_date"),
+                "apogee_km": meta.get("apogee_km"),
+                "perigee_km": meta.get("perigee_km"),
+                "inclination_deg": meta.get("inclination_deg"),
+                "period_min": meta.get("period_min"),
+                "rcs_size": meta.get("rcs_size"),
+                "orbit_center": meta.get("orbit_center"),
+                "orbit_type": meta.get("orbit_type"),
+            }
+        )
+
+    missing_tle = max(0, total_objects - total_with_tle)
+    return {
+        "items": items,
+        "total": total_objects,
+        "total_with_tle": total_with_tle,
+        "missing_tle": missing_tle,
+        "limit": limit,
+        "offset": offset,
+        "q": q_clean or None,
     }
 
 

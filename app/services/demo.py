@@ -91,9 +91,10 @@ def seed_demo(db: Session) -> Dict[str, int]:
 
     events = []
     events.extend(conjunction.detect_events_for_state(db, state_a))
+    db.flush()
 
     for event in events:
-        sigma = propagation.extract_sigma(cov)
+        sigma = getattr(event, "_sigma_km", propagation.extract_sigma(cov))
         poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
         db.add(
             models.RiskAssessment(
@@ -104,6 +105,18 @@ def seed_demo(db: Session) -> Dict[str, int]:
                 sensitivity_json=sensitivity,
             )
         )
+        r_rel = getattr(event, "_r_rel_km", None)
+        v_rel = getattr(event, "_v_rel_km_s", None)
+        if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
+            db.merge(
+                models.EventGeometry(
+                    event_id=event.id,
+                    frame="ECI",
+                    relative_position_km=r_rel,
+                    relative_velocity_km_s=v_rel,
+                    combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
+                )
+            )
         options = maneuver.generate_options(event, risk_score)
         for option in options:
             db.add(

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Catalog</h2>
+      <div class="panel-sub">Browse tracked space objects and data quality.</div>
+    </div>
+  </div>
+
+  <div class="notice">
+    Quality tiers are based on TLE source and age. Use for awareness only unless you have operator-grade ephemerides.
+  </div>
+
+  <div class="catalog-grid">
+    <div>
+      <div class="metric-label">Last Sync</div>
+      <div class="metric-value">{{ catalog_status.last_sync or 'Never' }}</div>
+    </div>
+    <div>
+      <div class="metric-label">Source</div>
+      <div class="metric-value">{{ catalog_status.source or '-' }}</div>
+    </div>
+    <form method="post" action="/catalog/sync-ui">
+      <button class="secondary" type="submit">Sync Now</button>
+    </form>
+  </div>
+
+  <form class="filters" method="get" action="/catalog-ui">
+    <div class="filter-group">
+      <label>Search</label>
+      <input type="text" name="q" value="{{ q }}" placeholder="Name or NORAD ID" />
+    </div>
+    <div class="filter-group">
+      <label>Show</label>
+      <select name="show">
+        <option value="catalog" {% if show == 'catalog' %}selected{% endif %}>Catalog</option>
+        <option value="operator" {% if show == 'operator' %}selected{% endif %}>Operator Assets</option>
+        <option value="all" {% if show == 'all' %}selected{% endif %}>All</option>
+      </select>
+    </div>
+    <button class="primary" type="submit">Search</button>
+  </form>
+
+  <div class="panel-sub">
+    Showing {{ items|length }} objects (page {{ page }} of {{ pages }}).
+    Total matching: {{ total_with_tle }} with TLE, {{ missing_tle }} missing TLE.
+  </div>
+
+  <div class="table">
+    <div class="table-row header catalog">
+      <span>Name</span>
+      <span>NORAD</span>
+      <span>Type</span>
+      <span>Owner</span>
+      <span>Tier</span>
+      <span>Age (h)</span>
+      <span>Per/Ap (km)</span>
+    </div>
+    {% for obj in items %}
+    <a class="table-row catalog" href="/catalog-ui/{{ obj.id }}">
+      <span class="mono">{{ obj.name }}</span>
+      <span class="mono">{{ obj.norad_cat_id or '-' }}</span>
+      <span>{{ obj.object_type or '-' }}</span>
+      <span>{{ obj.owner or '-' }}</span>
+      <span class="pill tier {{ obj.quality_tier|lower }}">{{ obj.quality_tier }}</span>
+      <span class="mono">{% if obj.tle_age_hours is not none %}{{ "%.1f"|format(obj.tle_age_hours) }}{% else %}-{% endif %}</span>
+      <span class="mono">
+        {% if obj.perigee_km is not none or obj.apogee_km is not none %}
+          {{ obj.perigee_km or '-' }}/{{ obj.apogee_km or '-' }}
+        {% else %}
+          -
+        {% endif %}
+      </span>
+    </a>
+    {% else %}
+    <div class="table-row empty">No objects found.</div>
+    {% endfor %}
+  </div>
+
+  <div class="pager">
+    {% if page_prev %}
+      <a class="secondary" href="{{ page_prev }}">Previous</a>
+    {% else %}
+      <span class="secondary disabled">Previous</span>
+    {% endif %}
+    <span class="pager-meta">Page {{ page }} / {{ pages }}</span>
+    {% if page_next %}
+      <a class="secondary" href="{{ page_next }}">Next</a>
+    {% else %}
+      <span class="secondary disabled">Next</span>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from urllib.parse import urlencode
@@ -296,6 +297,7 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
         .order_by(models.Decision.id.desc())
         .first()
     )
+    geometry = db.get(models.EventGeometry, event_id)
     space_object = None
     if event.space_object_id:
         space_object = db.get(models.SpaceObject, event.space_object_id)
@@ -317,11 +319,13 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
         {
             "request": request,
             "event": event,
+            "time_to_tca_hours": (event.tca - datetime.utcnow()).total_seconds() / 3600.0,
             "risk": risk,
             "maneuvers": maneuvers,
             "decision": decision,
             "runbook": runbook,
             "space_object": space_object,
+            "geometry": geometry,
         },
     )
 
@@ -366,6 +370,94 @@ def satellites_create_ui(
     db.add(satellite)
     db.commit()
     return RedirectResponse(url="/satellites-ui", status_code=303)
+
+
+@app.get("/catalog-ui", response_class=HTMLResponse)
+def catalog_ui(
+    request: Request,
+    db: Session = Depends(get_db),
+    q: Optional[str] = None,
+    show: str = "catalog",
+    page: int = 1,
+):
+    per_page = 50
+    page = max(1, int(page))
+    offset = (page - 1) * per_page
+
+    is_operator_asset = None
+    if show == "catalog":
+        is_operator_asset = False
+    elif show == "operator":
+        is_operator_asset = True
+    elif show == "all":
+        is_operator_asset = None
+    else:
+        show = "catalog"
+        is_operator_asset = False
+
+    data = catalog_sync.catalog_objects_page(
+        db,
+        q=q,
+        is_operator_asset=is_operator_asset,
+        limit=per_page,
+        offset=offset,
+    )
+    status = catalog_sync.catalog_status(db)
+
+    total_with_tle = int(data.get("total_with_tle") or 0)
+    pages = max(1, int(math.ceil(total_with_tle / per_page))) if total_with_tle else 1
+    if page > pages:
+        page = pages
+        offset = (page - 1) * per_page
+        data = catalog_sync.catalog_objects_page(
+            db,
+            q=q,
+            is_operator_asset=is_operator_asset,
+            limit=per_page,
+            offset=offset,
+        )
+
+    base_params = {"q": q or None, "show": show}
+    base_params = {k: v for k, v in base_params.items() if v}
+    query_base = urlencode(base_params)
+
+    def page_link(p: int) -> str:
+        params = dict(base_params)
+        params["page"] = p
+        return "/catalog-ui?" + urlencode(params)
+
+    return templates.TemplateResponse(
+        "catalog.html",
+        {
+            "request": request,
+            "items": data.get("items", []),
+            "q": q or "",
+            "show": show,
+            "page": page,
+            "pages": pages,
+            "total": data.get("total", 0),
+            "total_with_tle": total_with_tle,
+            "missing_tle": data.get("missing_tle", 0),
+            "catalog_status": status,
+            "page_prev": page_link(page - 1) if page > 1 else None,
+            "page_next": page_link(page + 1) if page < pages else None,
+            "query_base": query_base,
+        },
+    )
+
+
+@app.get("/catalog-ui/{object_id}", response_class=HTMLResponse)
+def catalog_detail_ui(object_id: int, request: Request, db: Session = Depends(get_db)):
+    detail = catalog_sync.catalog_object_detail(db, object_id)
+    if not detail:
+        return templates.TemplateResponse(
+            "catalog_detail.html",
+            {"request": request, "object": None},
+        )
+    return templates.TemplateResponse(
+        "catalog_detail.html",
+        {"request": request, "object": detail},
+    )
 
 
 @app.get("/ingest-ui", response_class=HTMLResponse)
@@ -451,8 +543,9 @@ def ingest_ui_post(
     db.flush()
 
     events = conjunction.detect_events_for_state(db, orbit_state)
+    db.flush()
     for event in events:
-        sigma = propagation.extract_sigma(orbit_state.covariance)
+        sigma = getattr(event, "_sigma_km", propagation.extract_sigma(orbit_state.covariance))
         poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
         db.add(
             models.RiskAssessment(
@@ -463,6 +556,18 @@ def ingest_ui_post(
                 sensitivity_json=sensitivity,
             )
         )
+        r_rel = getattr(event, "_r_rel_km", None)
+        v_rel = getattr(event, "_v_rel_km_s", None)
+        if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
+            db.merge(
+                models.EventGeometry(
+                    event_id=event.id,
+                    frame="ECI",
+                    relative_position_km=r_rel,
+                    relative_velocity_km_s=v_rel,
+                    combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
+                )
+            )
         options = maneuver.generate_options(event, risk_score)
         for option in options:
             db.add(

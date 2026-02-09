@@ -2,18 +2,24 @@
 {% block content %}
 <section class="panel">
   <div class="panel-header">
-    <h2>Ingest Orbit State</h2>
-    <span class="panel-sub">Manual entry for operator ephemerides</span>
+    <div>
+      <h2>Add Orbit State</h2>
+      <span class="panel-sub">For best results: operator ephemerides or high-confidence tracking.</span>
+    </div>
   </div>
 
   <form class="form" method="post" action="/ingest-ui">
     <div class="form-row">
       <label>Satellite</label>
-      <select name="satellite_id" required>
-        {% for sat in satellites %}
-        <option value="{{ sat.id }}">#{{ sat.id }} — {{ sat.name }}</option>
-        {% endfor %}
-      </select>
+      {% if satellites|length %}
+        <select name="satellite_id" required>
+          {% for sat in satellites %}
+          <option value="{{ sat.id }}">#{{ sat.id }} — {{ sat.name }}</option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <div class="empty-state">Add a satellite first: <a href="/satellites-ui">Satellites</a></div>
+      {% endif %}
     </div>
     <div class="form-row">
       <label>Epoch (UTC ISO)</label>
@@ -39,17 +45,191 @@
         <option value="ephemeris">ephemeris</option>
       </select>
     </div>
-    <button class="primary" type="submit">Ingest Orbit State</button>
+    <button class="primary" type="submit" {% if not satellites|length %}disabled{% endif %}>Add Orbit State</button>
   </form>
 </section>
 
 <section class="panel">
   <div class="panel-header">
-    <h2>Quick Actions</h2>
-    <span class="panel-sub">Use demo data if you want instant events</span>
+    <div>
+      <h2>Add Tracking Message (CDM-lite)</h2>
+      <span class="panel-sub">Paste relative state + covariance at closest approach to compute PoC.</span>
+    </div>
   </div>
-  <form method="post" action="/demo/seed">
-    <button class="primary" type="submit">Seed Demo Data</button>
+  <div class="notice">
+    This is a simplified CDM input. If you have a full CCSDS CDM, we can add proper parsing next.
+  </div>
+
+  <form id="cdmForm" class="form" onsubmit="return false;">
+    <div class="form-row">
+      <label>Satellite</label>
+      {% if satellites|length %}
+        <select id="cdmSatelliteId" required>
+          {% for sat in satellites %}
+          <option value="{{ sat.id }}">#{{ sat.id }} — {{ sat.name }}</option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <div class="empty-state">Add a satellite first: <a href="/satellites-ui">Satellites</a></div>
+      {% endif %}
+    </div>
+    <div class="form-row">
+      <label>TCA (UTC ISO)</label>
+      <input id="cdmTca" type="text" placeholder="2026-02-04T00:00:00Z" required />
+    </div>
+    <div class="form-row">
+      <label>Secondary NORAD ID (optional)</label>
+      <input id="cdmNorad" type="number" placeholder="25544" />
+    </div>
+    <div class="form-row">
+      <label>Secondary Name (optional)</label>
+      <input id="cdmSecondaryName" type="text" placeholder="ISS (ZARYA)" />
+    </div>
+
+    <div class="form-row">
+      <label>Relative Position r_rel (km)</label>
+      <div class="triple">
+        <input id="cdmRx" type="number" step="0.001" placeholder="x" required />
+        <input id="cdmRy" type="number" step="0.001" placeholder="y" required />
+        <input id="cdmRz" type="number" step="0.001" placeholder="z" required />
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Relative Velocity v_rel (km/s)</label>
+      <div class="triple">
+        <input id="cdmVx" type="number" step="0.0001" placeholder="vx" required />
+        <input id="cdmVy" type="number" step="0.0001" placeholder="vy" required />
+        <input id="cdmVz" type="number" step="0.0001" placeholder="vz" required />
+      </div>
+    </div>
+    <div class="form-row">
+      <label>1-sigma Position Uncertainty (km)</label>
+      <div class="triple">
+        <input id="cdmSx" type="number" step="0.001" placeholder="sigma-x" value="1.0" required />
+        <input id="cdmSy" type="number" step="0.001" placeholder="sigma-y" value="1.0" required />
+        <input id="cdmSz" type="number" step="0.001" placeholder="sigma-z" value="1.0" required />
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Hard-body Radius (m)</label>
+      <input id="cdmHbr" type="number" step="0.1" value="10" />
+    </div>
+    <div class="form-row">
+      <label>Source Name</label>
+      <input id="cdmSourceName" type="text" value="cdm" />
+    </div>
+    <div class="form-row">
+      <label>Source Type</label>
+      <select id="cdmSourceType">
+        <option value="public">public</option>
+        <option value="commercial">commercial</option>
+        <option value="ephemeris">ephemeris</option>
+      </select>
+    </div>
+
+    <div class="form-actions">
+      <button id="cdmExampleBtn" class="secondary" type="button">Fill Example</button>
+      <button id="cdmSubmitBtn" class="primary" type="button" {% if not satellites|length %}disabled{% endif %}>Add CDM</button>
+      <span id="cdmStatus" class="panel-sub"></span>
+    </div>
   </form>
 </section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Quick Actions</h2>
+      <span class="panel-sub">Need something to click around?</span>
+    </div>
+  </div>
+  <form method="post" action="/demo/seed">
+    <button class="secondary" type="submit">Seed Demo Data</button>
+  </form>
+</section>
+
+<script>
+  const cdmStatus = document.getElementById('cdmStatus');
+  const cdmSubmitBtn = document.getElementById('cdmSubmitBtn');
+  const cdmExampleBtn = document.getElementById('cdmExampleBtn');
+
+  function setCdmStatus(msg, kind = 'info') {
+    if (!cdmStatus) return;
+    cdmStatus.textContent = msg;
+    cdmStatus.dataset.kind = kind;
+  }
+
+  function num(id) {
+    const el = document.getElementById(id);
+    return el ? Number(el.value) : NaN;
+  }
+
+  function str(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  }
+
+  function buildCdmPayload() {
+    const sx = num('cdmSx'), sy = num('cdmSy'), sz = num('cdmSz');
+    const cov = [
+      [sx * sx, 0, 0],
+      [0, sy * sy, 0],
+      [0, 0, sz * sz],
+    ];
+    const noradRaw = str('cdmNorad');
+    const norad = noradRaw ? Number(noradRaw) : null;
+
+    return {
+      tca: str('cdmTca'),
+      relative_position_km: [num('cdmRx'), num('cdmRy'), num('cdmRz')],
+      relative_velocity_km_s: [num('cdmVx'), num('cdmVy'), num('cdmVz')],
+      combined_pos_covariance_km2: cov,
+      hard_body_radius_m: num('cdmHbr') || 10.0,
+      source: { name: str('cdmSourceName') || 'cdm', type: str('cdmSourceType') || 'public' },
+      satellite_id: Number(str('cdmSatelliteId')),
+      secondary_norad_cat_id: norad,
+      secondary_name: str('cdmSecondaryName') || null,
+    };
+  }
+
+  cdmExampleBtn?.addEventListener('click', () => {
+    document.getElementById('cdmTca').value = new Date().toISOString();
+    document.getElementById('cdmNorad').value = 25544;
+    document.getElementById('cdmSecondaryName').value = 'ISS (ZARYA)';
+    document.getElementById('cdmRx').value = 0.02;
+    document.getElementById('cdmRy').value = 0.0;
+    document.getElementById('cdmRz').value = 0.0;
+    document.getElementById('cdmVx').value = 0.0;
+    document.getElementById('cdmVy').value = 0.01;
+    document.getElementById('cdmVz').value = 0.0;
+    document.getElementById('cdmSx').value = 1.0;
+    document.getElementById('cdmSy').value = 1.0;
+    document.getElementById('cdmSz').value = 1.0;
+    document.getElementById('cdmHbr').value = 10.0;
+    setCdmStatus('Example filled. Click Add CDM to ingest.', 'info');
+  });
+
+  cdmSubmitBtn?.addEventListener('click', async () => {
+    try {
+      setCdmStatus('Submitting…', 'info');
+      cdmSubmitBtn.disabled = true;
+      const payload = buildCdmPayload();
+      const resp = await fetch('/ingest/cdm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || 'Request failed');
+      }
+      const data = await resp.json();
+      setCdmStatus(`Saved as event #${data.event_id}. Redirecting…`, 'ok');
+      window.location.href = `/events-ui/${data.event_id}`;
+    } catch (err) {
+      setCdmStatus(`Failed: ${err.message || err}`, 'error');
+    } finally {
+      cdmSubmitBtn.disabled = false;
+    }
+  });
+</script>
 {% endblock %}

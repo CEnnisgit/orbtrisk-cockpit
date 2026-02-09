@@ -39,18 +39,17 @@ function computePositions() {
       positions[i] = { id: entry.id, ok: false };
       continue;
     }
-    const ecef = satellite.eciToEcf(pv.position, gmst);
     positions[i] = {
       id: entry.id,
       ok: true,
-      x: ecef.x * 1000,
-      y: ecef.y * 1000,
-      z: ecef.z * 1000,
+      // TEME (ECI) in meters; we transform to Earth-fixed in the main thread using Cesium.
+      x: pv.position.x * 1000,
+      y: pv.position.y * 1000,
+      z: pv.position.z * 1000,
     };
   }
 
   let trail = [];
-  let groundTrack = [];
   if (selectedId) {
     const entry = entries.find((item) => item.id === selectedId);
     if (entry && entry.satrec) {
@@ -61,21 +60,18 @@ function computePositions() {
         if (!pv.position) {
           continue;
         }
-        const tGmst = satellite.gstime(t);
-        const ecef = satellite.eciToEcf(pv.position, tGmst);
-        trail.push({ x: ecef.x * 1000, y: ecef.y * 1000, z: ecef.z * 1000 });
-        const geo = satellite.eciToGeodetic(pv.position, tGmst);
-        const groundEcf = satellite.geodeticToEcf({
-          longitude: geo.longitude,
-          latitude: geo.latitude,
-          height: 0,
+        trail.push({
+          t: t.getTime(),
+          gmst: satellite.gstime(t),
+          x: pv.position.x * 1000,
+          y: pv.position.y * 1000,
+          z: pv.position.z * 1000,
         });
-        groundTrack.push({ x: groundEcf.x * 1000, y: groundEcf.y * 1000, z: groundEcf.z * 1000 });
       }
     }
   }
 
-  postMessage({ type: "positions", positions, trail, groundTrack, timestamp: now });
+  postMessage({ type: "positions", positions, trail, gmst, timestamp: now });
 }
 
 function startTimer() {

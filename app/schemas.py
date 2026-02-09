@@ -73,6 +73,25 @@ class OrbitStateOut(BaseModel):
         from_attributes = True
 
 
+class CdmIngestRequest(BaseModel):
+    tca: datetime
+    relative_position_km: List[float] = Field(..., min_length=3, max_length=3)
+    relative_velocity_km_s: List[float] = Field(..., min_length=3, max_length=3)
+    combined_pos_covariance_km2: List[List[float]] = Field(..., min_length=3, max_length=3)
+    hard_body_radius_m: Optional[float] = None
+    source: SourceCreate
+    satellite_id: Optional[int] = None
+    satellite: Optional[SatelliteCreate] = None
+    secondary_norad_cat_id: Optional[int] = None
+    secondary_name: Optional[str] = None
+
+
+class CdmIngestOut(BaseModel):
+    event_id: int
+    risk_score: float
+    poc: float
+
+
 class ConjunctionEventOut(BaseModel):
     id: int
     satellite_id: int
@@ -139,6 +158,18 @@ class DecisionOut(DecisionCreate):
         from_attributes = True
 
 
+class EventGeometryOut(BaseModel):
+    event_id: int
+    frame: str
+    relative_position_km: list[float]
+    relative_velocity_km_s: list[float]
+    combined_pos_covariance_km2: Optional[list[list[float]]] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 
 
 class EventListItem(BaseModel):
@@ -151,6 +182,7 @@ class EventDetailOut(BaseModel):
     risk: Optional[RiskAssessmentOut]
     maneuvers: List[ManeuverOptionOut]
     decision: Optional[DecisionOut]
+    geometry: Optional[EventGeometryOut] = None
 
 
 

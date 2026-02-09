@@ -6,7 +6,17 @@
   {% else %}
     <div class="panel-header">
       <h2>Event #{{ event.id }}</h2>
-      <span class="panel-sub">TCA {{ event.tca }}</span>
+      <span class="panel-sub">
+        TCA {{ event.tca }}
+        ·
+        {% if time_to_tca_hours is not none %}
+          {% if time_to_tca_hours >= 0 %}
+            in {{ "%.1f"|format(time_to_tca_hours) }}h
+          {% else %}
+            {{ "%.1f"|format(-time_to_tca_hours) }}h ago
+          {% endif %}
+        {% endif %}
+      </span>
     </div>
     <div class="grid">
       <div class="card">
@@ -14,8 +24,14 @@
         <p>Satellite {{ event.satellite_id }} vs {{ space_object.name if space_object else 'Object' }}</p>
         <p>Type: {{ space_object.object_type if space_object else '-' }}</p>
         <p>Status: <span class="pill {{ event.status }}">{{ event.status }}</span></p>
+        <p><a class="secondary" href="/events/{{ event.id }}/report">Download PDF Report</a></p>
         <p>Miss distance: {{ "%.3f"|format(event.miss_distance) }} km</p>
         <p>Relative velocity: {{ "%.3f"|format(event.relative_velocity) }} km/s</p>
+        {% if geometry %}
+          <p class="panel-sub">Geometry @TCA ({{ geometry.frame }})</p>
+          <p>r_rel (km): [{{ "%.3f"|format(geometry.relative_position_km[0]) }}, {{ "%.3f"|format(geometry.relative_position_km[1]) }}, {{ "%.3f"|format(geometry.relative_position_km[2]) }}]</p>
+          <p>v_rel (km/s): [{{ "%.3f"|format(geometry.relative_velocity_km_s[0]) }}, {{ "%.3f"|format(geometry.relative_velocity_km_s[1]) }}, {{ "%.3f"|format(geometry.relative_velocity_km_s[2]) }}]</p>
+        {% endif %}
         <form class="form compact" method="post" action="/events-ui/{{ event.id }}/status">
           <div class="form-row">
             <label>Update Status</label>
@@ -32,14 +48,25 @@
         <h3>Risk</h3>
         {% if risk %}
           <div class="risk-score">Risk score: {{ "%.2f"|format(risk.risk_score) }}</div>
+          <div class="panel-sub">PoC: {{ "%.6g"|format(risk.poc) }}</div>
           <div class="risk-bar">
             <span style="width: {{ risk.risk_score * 100 }}%"></span>
           </div>
-          <ul class="risk-list">
-            {% for key, value in risk.components_json.items() %}
-              <li>{{ key }}: {{ "%.2f"|format(value) }}</li>
-            {% endfor %}
-          </ul>
+          <details class="details">
+            <summary>Why this score?</summary>
+            <ul class="risk-list">
+              {% for key, value in risk.components_json.items() %}
+                <li>
+                  {{ key }}:
+                  {% if value is number %}
+                    {{ "%.6g"|format(value) }}
+                  {% else %}
+                    {{ value }}
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
         {% else %}
           <p>No risk assessment available.</p>
         {% endif %}
@@ -116,15 +143,15 @@
       <h3>Recommended Maneuvers</h3>
       <div class="table">
         <div class="table-row header">
-          <span>Delta-V</span>
+          <span>Delta-V (m/s)</span>
           <span>Window Start</span>
           <span>Window End</span>
           <span>Risk After</span>
-          <span>Fuel Cost</span>
+          <span>Fuel (m/s eq.)</span>
         </div>
         {% for option in maneuvers %}
-        <div class="table-row">
-          <span>{{ "%.3f"|format(option.delta_v) }}</span>
+        <div class="table-row {% if option.is_recommended %}recommended{% endif %}">
+          <span>{{ "%.2f"|format(option.delta_v * 1000) }}</span>
           <span>{{ option.time_window_start }}</span>
           <span>{{ option.time_window_end }}</span>
           <span>{{ "%.2f"|format(option.risk_after) }}</span>

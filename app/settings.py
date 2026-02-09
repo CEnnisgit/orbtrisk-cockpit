@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 500
     horizons_base_url: str = "https://ssd.jpl.nasa.gov/api/horizons.api"
     solar_small_body_cache_hours: int = 6
+    default_hbr_m: float = 10.0
+    poc_alert_threshold: float = 1e-4
+    poc_num_angle_steps: int = 180
 
 
 settings = Settings()

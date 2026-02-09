@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  {% if not object %}
+    <h2>Object Not Found</h2>
+  {% else %}
+    <div class="panel-header">
+      <div>
+        <h2>{{ object.name }}</h2>
+        <div class="panel-sub">
+          NORAD {{ object.norad_cat_id or '-' }} · {{ object.object_type or '-' }}
+        </div>
+      </div>
+      <div class="header-actions">
+        <a class="secondary" href="/catalog-ui">Back to Catalog</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Data Quality</h3>
+        <p>Tier: <span class="pill tier {{ (object.quality_tier or 'd')|lower }}">{{ object.quality_tier or 'D' }}</span></p>
+        <p>TLE epoch: <span class="mono">{{ object.tle_epoch or '-' }}</span></p>
+        <p>Source: <span class="mono">{{ object.tle_source or '-' }}</span></p>
+        <p>Age (hours): <span class="mono">{{ "%.1f"|format(object.tle_age_hours) if object.tle_age_hours is not none else '-' }}</span></p>
+      </div>
+      <div class="card">
+        <h3>Orbital Summary</h3>
+        <p>Perigee/Apogee (km): <span class="mono">{{ object.perigee_km or '-' }}/{{ object.apogee_km or '-' }}</span></p>
+        <p>Inclination (deg): <span class="mono">{{ object.inclination_deg or '-' }}</span></p>
+        <p>Period (min): <span class="mono">{{ object.period_min or '-' }}</span></p>
+        <p>RCS size: <span class="mono">{{ object.rcs_size or '-' }}</span></p>
+      </div>
+      <div class="card">
+        <h3>Ownership</h3>
+        <p>Owner: <span class="mono">{{ object.owner or '-' }}</span></p>
+        <p>Ops status: <span class="mono">{{ object.ops_status_code or '-' }}</span></p>
+        <p>Launch date: <span class="mono">{{ object.launch_date or '-' }}</span></p>
+        <p>Decay date: <span class="mono">{{ object.decay_date or '-' }}</span></p>
+      </div>
+    </div>
+
+    <div class="panel-subsection">
+      <h3>Latest TLE</h3>
+      {% if object.tle_line1 and object.tle_line2 %}
+        <pre class="code-block">{{ object.tle_line1 }}
+{{ object.tle_line2 }}</pre>
+      {% else %}
+        <div class="empty-state">No TLE available for this object.</div>
+      {% endif %}
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
+

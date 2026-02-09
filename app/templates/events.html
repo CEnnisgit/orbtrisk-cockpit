@@ -2,11 +2,11 @@
 {% block content %}
 <section class="panel">
   <div class="panel-header">
-    <h2>Conjunction Triage</h2>
-    <span class="panel-sub">Queues and filters</span>
+    <h2>Close Approach Alerts</h2>
+    <span class="panel-sub">Filter, review, and export a report.</span>
   </div>
   <div class="notice">
-    Public TLE data is for awareness only and not suitable for operational conjunction assessment. Objects with catalog IDs > 99999 are skipped due to TLE limitations.
+    Public orbit data is for awareness only. For operational decisions, use operator ephemerides.
   </div>
 
   <div class="presets">
@@ -59,7 +59,7 @@
         <div class="table-row header triage">
           <span>Event</span>
           <span>Status</span>
-          <span>TCA (hrs)</span>
+          <span>TCA</span>
           <span>Risk</span>
           <span>Band</span>
           <span>Object</span>
@@ -70,7 +70,13 @@
         <a class="table-row triage" href="/events-ui?{% if filter_query %}{{ filter_query }}&{% endif %}event_id={{ item.event.id }}">
           <span>#{{ item.event.id }}</span>
           <span class="pill {{ item.event.status }}">{{ item.event.status }}</span>
-          <span>{{ "%.1f"|format(item.time_to_tca_hours) }}</span>
+          <span class="mono">
+            {% if item.time_to_tca_hours >= 0 %}
+              in {{ "%.1f"|format(item.time_to_tca_hours) }}h
+            {% else %}
+              {{ "%.1f"|format(-item.time_to_tca_hours) }}h ago
+            {% endif %}
+          </span>
           <span>{{ "%.2f"|format(item.risk_score or 0) }}</span>
           <span class="pill {{ item.risk_band or 'unknown' }}">{{ item.risk_band or 'unknown' }}</span>
           <span>{{ item.object_name or '-' }}</span>
@@ -94,14 +100,17 @@
             <h3>Event #{{ selected.id }}</h3>
             <p class="panel-sub">TCA {{ selected.tca }}</p>
           </div>
-          <form method="post" action="/events-ui/{{ selected.id }}/status">
-            <select name="status">
-              <option value="open" {% if selected.status == 'open' %}selected{% endif %}>open</option>
-              <option value="in_review" {% if selected.status == 'in_review' %}selected{% endif %}>in_review</option>
-              <option value="closed" {% if selected.status == 'closed' %}selected{% endif %}>closed</option>
-            </select>
-            <button class="secondary" type="submit">Update Status</button>
-          </form>
+          <div class="header-actions">
+            <a class="secondary" href="/events/{{ selected.id }}/report">Download PDF</a>
+            <form method="post" action="/events-ui/{{ selected.id }}/status">
+              <select name="status">
+                <option value="open" {% if selected.status == 'open' %}selected{% endif %}>open</option>
+                <option value="in_review" {% if selected.status == 'in_review' %}selected{% endif %}>in_review</option>
+                <option value="closed" {% if selected.status == 'closed' %}selected{% endif %}>closed</option>
+              </select>
+              <button class="secondary" type="submit">Update</button>
+            </form>
+          </div>
         </div>
 
         <div class="grid">
@@ -116,14 +125,25 @@
             <h4>Risk</h4>
             {% if selected_risk %}
               <div class="risk-score">Risk score: {{ "%.2f"|format(selected_risk.risk_score) }}</div>
+              <div class="panel-sub">PoC: {{ "%.6g"|format(selected_risk.poc) }}</div>
               <div class="risk-bar">
                 <span style="width: {{ selected_risk.risk_score * 100 }}%"></span>
               </div>
-              <ul class="risk-list">
-                {% for key, value in selected_risk.components_json.items() %}
-                  <li>{{ key }}: {{ "%.2f"|format(value) }}</li>
-                {% endfor %}
-              </ul>
+              <details class="details">
+                <summary>Why this score?</summary>
+                <ul class="risk-list">
+                  {% for key, value in selected_risk.components_json.items() %}
+                    <li>
+                      {{ key }}:
+                      {% if value is number %}
+                        {{ "%.6g"|format(value) }}
+                      {% else %}
+                        {{ value }}
+                      {% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              </details>
             {% else %}
               <p>No risk assessment available.</p>
             {% endif %}
@@ -202,15 +222,15 @@
           <h4>Recommended Maneuvers</h4>
           <div class="table">
             <div class="table-row header">
-              <span>Delta-V</span>
+              <span>Delta-V (m/s)</span>
               <span>Window Start</span>
               <span>Window End</span>
               <span>Risk After</span>
-              <span>Fuel Cost</span>
+              <span>Fuel (m/s eq.)</span>
             </div>
             {% for option in selected_maneuvers %}
-            <div class="table-row">
-              <span>{{ "%.3f"|format(option.delta_v) }}</span>
+            <div class="table-row {% if option.is_recommended %}recommended{% endif %}">
+              <span>{{ "%.2f"|format(option.delta_v * 1000) }}</span>
               <span>{{ option.time_window_start }}</span>
               <span>{{ option.time_window_end }}</span>
               <span>{{ "%.2f"|format(option.risk_after) }}</span>

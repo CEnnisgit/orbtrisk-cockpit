@@ -4,26 +4,30 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or "Space Risk Ops" }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/static/styles.css" />
     {% block head %}{% endblock %}
   </head>
   <body>
-    <div class="bg-orbit"></div>
+    <div class="bg-orbit" aria-hidden="true"></div>
     <header class="top-bar">
       <div class="brand">
-        <span class="brand-dot"></span>
+        <span class="brand-dot" aria-hidden="true"></span>
         <div>
           <div class="brand-name">OrbitRisk</div>
-          <div class="brand-sub">Decision infrastructure for LEO operations</div>
+          <div class="brand-sub">Space safety, in plain English</div>
         </div>
       </div>
       <nav class="nav">
-        <a href="/">Viewer</a>
-        <a href="/dashboard">Dashboard</a>
-        <a href="/events-ui">Events</a>
-        <a href="/satellites-ui">Satellites</a>
-        <a href="/ingest-ui">Ingest</a>
-        <a href="/audit-ui">Audit</a>
+        <a class="{% if request.url.path == '/' %}active{% endif %}" href="/">Map</a>
+        <a class="{% if request.url.path.startswith('/dashboard') %}active{% endif %}" href="/dashboard">Home</a>
+        <a class="{% if request.url.path.startswith('/events-ui') %}active{% endif %}" href="/events-ui">Alerts</a>
+        <a class="{% if request.url.path.startswith('/catalog-ui') %}active{% endif %}" href="/catalog-ui">Catalog</a>
+        <a class="{% if request.url.path.startswith('/satellites-ui') %}active{% endif %}" href="/satellites-ui">Satellites</a>
+        <a class="{% if request.url.path.startswith('/ingest-ui') %}active{% endif %}" href="/ingest-ui">Add Data</a>
+        <a class="{% if request.url.path.startswith('/audit-ui') %}active{% endif %}" href="/audit-ui">History</a>
         <a href="/docs">API</a>
       </nav>
     </header>

@@ -8,6 +8,8 @@ const searchButton = document.getElementById("globeSearchBtn");
 const resetButton = document.getElementById("globeResetBtn");
 const zoomInButton = document.getElementById("globeZoomInBtn");
 const zoomOutButton = document.getElementById("globeZoomOutBtn");
+const syncEl = document.getElementById("globeSync");
+const syncButton = document.getElementById("globeSyncBtn");
 const toggleCatalog = document.getElementById("toggleCatalog");
 const toggleOperator = document.getElementById("toggleOperator");
 
@@ -124,6 +126,117 @@ function setCounts(total, missing) {
   countsEl.textContent = `${total} objects loaded${missingText}`;
 }
 
+function setSyncStatus(message) {
+  if (!syncEl) return;
+  syncEl.textContent = message || "";
+}
+
+function formatUtcIso(isoString) {
+  if (!isoString) return "\u2014";
+  const dt = new Date(isoString);
+  if (Number.isNaN(dt.getTime())) return String(isoString);
+  return dt.toISOString().replace("T", " ").replace("Z", " UTC");
+}
+
+async function loadCatalogStatus() {
+  try {
+    const resp = await fetch("/catalog/status");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const source = data.source || "\u2014";
+    const lastSync = formatUtcIso(data.last_sync);
+    setSyncStatus(`TLE: ${source} \u00b7 last sync ${lastSync}`);
+  } catch (err) {
+    // Ignore status fetch failures.
+  }
+}
+
+function hasTemeToFixedTransform() {
+  return Boolean(
+    Cesium
+      && Cesium.Transforms
+      && typeof Cesium.Transforms.computeTemeToPseudoFixedMatrix === "function"
+      && Cesium.JulianDate
+      && typeof Cesium.JulianDate.fromDate === "function"
+      && Cesium.Matrix3
+      && typeof Cesium.Matrix3.multiplyByVector === "function"
+  );
+}
+
+function rotateTemeToFixedGmst(temeMeters, gmstRad, result) {
+  // Fallback when Cesium's TEME->fixed transform isn't available.
+  // Equivalent to satellite.js eciToEcf rotation about +Z by GMST.
+  const cosG = Math.cos(gmstRad);
+  const sinG = Math.sin(gmstRad);
+  const x = temeMeters.x;
+  const y = temeMeters.y;
+  result.x = x * cosG + y * sinG;
+  result.y = -x * sinG + y * cosG;
+  result.z = temeMeters.z;
+  return result;
+}
+
+function formatDegrees(rad) {
+  const deg = Cesium.Math.toDegrees(rad);
+  // Normalize lon to [-180, 180]
+  const lon = ((deg + 540) % 360) - 180;
+  return lon.toFixed(4);
+}
+
+function updateSelectedLiveInfo() {
+  const latEl = document.getElementById("liveLat");
+  const lonEl = document.getElementById("liveLon");
+  const altEl = document.getElementById("liveAlt");
+  if (!latEl || !lonEl || !altEl) return;
+  if (!selectedPrimitive || !Cesium.defined(selectedPrimitive.position)) {
+    latEl.textContent = "\u2014";
+    lonEl.textContent = "\u2014";
+    altEl.textContent = "\u2014";
+    return;
+  }
+  const carto = Cesium.Cartographic.fromCartesian(selectedPrimitive.position);
+  latEl.textContent = Cesium.Math.toDegrees(carto.latitude).toFixed(4);
+  lonEl.textContent = formatDegrees(carto.longitude);
+  altEl.textContent = (carto.height / 1000).toFixed(1);
+}
+
+function buildImageryProvider(useIon) {
+  // Keep a deterministic, correctly georeferenced fallback when Ion isn't configured.
+  // This must not affect ECEF positioning of orbit objects; it only changes the globe texture.
+  const blankPixel = new Cesium.SingleTileImageryProvider({
+    url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+  });
+
+  if (useIon && Cesium.createWorldImagery && Cesium.IonWorldImageryStyle) {
+    try {
+      return Cesium.createWorldImagery({
+        style: Cesium.IonWorldImageryStyle.AERIAL,
+      });
+    } catch (err) {
+      // Fall through to non-Ion imagery.
+    }
+  }
+
+  // Detailed, properly georeferenced map tiles (Web Mercator), good for validating ground locations.
+  if (Cesium.UrlTemplateImageryProvider) {
+    return new Cesium.UrlTemplateImageryProvider({
+      url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      maximumLevel: 19,
+      credit: "\u00a9 OpenStreetMap contributors",
+    });
+  }
+
+  // Offline-ish fallback: a global equirectangular image (Blue Marble style).
+  // Still correctly mapped to the WGS84 ellipsoid, just not zoomable like tiles.
+  if (Cesium.SingleTileImageryProvider) {
+    return new Cesium.SingleTileImageryProvider({
+      url: "/static/textures/earth/land_ocean_ice_2048.jpg",
+    });
+  }
+
+  return blankPixel;
+}
+
 function buildViewer() {
   const token = window.CESIUM_ION_TOKEN;
   const nightAssetId = window.CESIUM_NIGHT_ASSET_ID;
@@ -131,14 +244,7 @@ function buildViewer() {
   if (useIon) {
     Cesium.Ion.defaultAccessToken = token;
   }
-  const baseLayer = new Cesium.SingleTileImageryProvider({
-    url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
-  });
-  const imageryProvider = useIon
-    ? Cesium.createWorldImagery({
-        style: Cesium.IonWorldImageryStyle.AERIAL,
-      })
-    : baseLayer;
+  const imageryProvider = buildImageryProvider(useIon);
 
   const terrainProvider = useIon && Cesium.createWorldTerrain ? Cesium.createWorldTerrain() : undefined;
   viewer = new Cesium.Viewer("cesiumContainer", {
@@ -166,6 +272,8 @@ function buildViewer() {
   viewer.scene.fog.enabled = true;
   viewer.scene.fog.density = 0.00025;
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#05070d");
+  // Avoid the "solid blue globe" look while tiles are loading/failing.
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#0b1220");
   viewer.scene.primitives.add(catalogCollection);
   viewer.scene.primitives.add(operatorCollection);
   viewer.scene.screenSpaceCameraController.inertiaSpin = 0.0;
@@ -175,7 +283,9 @@ function buildViewer() {
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 90000000.0;
   viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
   addNightLayer(nightAssetId);
-  addClouds();
+  // Random clouds look nice but are not "accurate"; keep them off by default.
+  // If you want them, set window.ENABLE_CLOUDS = true before globe.js runs.
+  if (window.ENABLE_CLOUDS) addClouds();
   resetCameraView();
   setupPicking();
 }
@@ -342,6 +452,14 @@ function renderInfo(obj) {
   const tier = (obj.quality_tier || "D").toUpperCase();
   const tierClass = `tier-${tier.toLowerCase()}`;
   const displayType = obj.is_operator_asset ? "Operator Satellite" : (obj.object_type || "Unknown");
+  const liveBlock = `
+    <div class="info-section">
+      <div class="info-section-title">Live (Derived)</div>
+      <div class="info-row"><span>Lat</span><span><span id="liveLat">\u2014</span>\u00b0</span></div>
+      <div class="info-row"><span>Lon</span><span><span id="liveLon">\u2014</span>\u00b0</span></div>
+      <div class="info-row"><span>Alt</span><span><span id="liveAlt">\u2014</span> km</span></div>
+    </div>
+  `;
   const rows = [
     ["NORAD ID", obj.norad_cat_id || "\u2014"],
     ["Type", displayType],
@@ -383,6 +501,7 @@ function renderInfo(obj) {
         <span class="quality-badge ${tierClass}">Tier ${tier}</span>
       </div>
       ${infoRowsHtml}
+      ${liveBlock}
       ${metaRows.length ? `<div class="info-section"><div class="info-section-title">Catalog</div>${metaHtml}</div>` : ""}
     </div>
     <div class="ai-card">
@@ -401,6 +520,7 @@ function renderInfo(obj) {
     </div>
   `;
   bindAiControls(obj);
+  updateSelectedLiveInfo();
 }
 
 function bindAiControls(obj) {
@@ -575,6 +695,9 @@ function setupControls() {
   }
   if (zoomOutButton) {
     zoomOutButton.addEventListener("click", () => zoomCamera(1.4));
+  }
+  if (syncButton) {
+    syncButton.addEventListener("click", syncCatalogIfDue);
   }
   if (searchInput) {
     searchInput.addEventListener("keydown", (event) => {
@@ -808,7 +931,68 @@ function applyFollowCamera() {
   viewer.camera.lookAt(selectedPrimitive.position, offset);
 }
 
+function teardownWorker() {
+  if (!worker) return;
+  try {
+    worker.terminate();
+  } catch (err) {
+    // Ignore termination errors.
+  }
+  worker = null;
+}
+
+function clearOrbitOverlays() {
+  if (!viewer) return;
+  if (trailEntity) {
+    viewer.entities.remove(trailEntity);
+    trailEntity = null;
+  }
+  if (groundTrackEntity) {
+    viewer.entities.remove(groundTrackEntity);
+    groundTrackEntity = null;
+  }
+  if (footprintEntity) {
+    viewer.entities.remove(footprintEntity);
+    footprintEntity = null;
+  }
+}
+
+async function syncCatalogIfDue() {
+  if (!syncButton) return;
+  const originalText = syncButton.textContent;
+  syncButton.disabled = true;
+  syncButton.textContent = "Syncing...";
+  setStatus("Syncing TLE catalog (if due)\u2026");
+  try {
+    const resp = await fetch("/catalog/sync-if-due", { method: "POST" });
+    if (!resp.ok) {
+      throw new Error("sync failed");
+    }
+    const result = await resp.json();
+    await loadCatalogStatus();
+    if (result && result.synced) {
+      const source = result.source || "catalog";
+      setStatus(`Catalog synced from ${source}. Reloading\u2026`);
+      await loadCatalog();
+      await loadCatalogStatus();
+    } else {
+      setStatus("Catalog already up to date.");
+    }
+  } catch (err) {
+    setStatus("Catalog sync failed.");
+  } finally {
+    syncButton.disabled = false;
+    syncButton.textContent = originalText;
+  }
+}
+
 async function loadCatalog() {
+  teardownWorker();
+  clearOrbitOverlays();
+  selectedPrimitive = null;
+  selectedObject = null;
+  renderInfo(null);
+
   setStatus("Loading catalog objects\u2026");
   const statusContainer = document.querySelector(".viewer-status");
   if (statusContainer) statusContainer.classList.add("loading");
@@ -834,19 +1018,82 @@ async function loadCatalog() {
   worker.onmessage = (event) => {
     if (event.data.type === "positions") {
       const positions = event.data.positions || [];
+      const timestamp = event.data.timestamp || Date.now();
+      const gmst = event.data.gmst;
+      const useCesiumTransform = hasTemeToFixedTransform();
+      const jd = useCesiumTransform ? Cesium.JulianDate.fromDate(new Date(timestamp)) : null;
+      const temeToFixed = useCesiumTransform
+        ? Cesium.Transforms.computeTemeToPseudoFixedMatrix(jd)
+        : null;
+      const scratchTeme = new Cesium.Cartesian3();
+      const scratchFixed = new Cesium.Cartesian3();
       positions.forEach((item, index) => {
         const primitive = primitiveList[index];
         if (!primitive) return;
         if (item.ok) {
           primitive.show = true;
-          primitive.position = new Cesium.Cartesian3(item.x, item.y, item.z);
+          scratchTeme.x = item.x;
+          scratchTeme.y = item.y;
+          scratchTeme.z = item.z;
+          if (temeToFixed) {
+            Cesium.Matrix3.multiplyByVector(temeToFixed, scratchTeme, scratchFixed);
+            primitive.position = new Cesium.Cartesian3(scratchFixed.x, scratchFixed.y, scratchFixed.z);
+          } else if (typeof gmst === "number") {
+            rotateTemeToFixedGmst(scratchTeme, gmst, scratchFixed);
+            primitive.position = new Cesium.Cartesian3(scratchFixed.x, scratchFixed.y, scratchFixed.z);
+          } else {
+            // Last-ditch fallback: assume the worker already provided Earth-fixed.
+            primitive.position = new Cesium.Cartesian3(item.x, item.y, item.z);
+          }
         } else {
           primitive.show = false;
         }
       });
-      updateTrail(event.data.trail || [], event.data.groundTrack || []);
+      // Selected-object trail is computed as TEME samples in the worker; convert to fixed here so it
+      // stays consistent with the main transform above.
+      const trailTeme = event.data.trail || [];
+      const trailFixed = [];
+      const groundTrackFixed = [];
+      if (Array.isArray(trailTeme) && trailTeme.length) {
+        const scratchTrailTeme = new Cesium.Cartesian3();
+        const scratchTrailFixed = new Cesium.Cartesian3();
+        trailTeme.forEach((p) => {
+          scratchTrailTeme.x = p.x;
+          scratchTrailTeme.y = p.y;
+          scratchTrailTeme.z = p.z;
+          if (useCesiumTransform && p.t) {
+            const jdP = Cesium.JulianDate.fromDate(new Date(p.t));
+            const m = Cesium.Transforms.computeTemeToPseudoFixedMatrix(jdP);
+            if (m) {
+              Cesium.Matrix3.multiplyByVector(m, scratchTrailTeme, scratchTrailFixed);
+            } else if (typeof p.gmst === "number") {
+              rotateTemeToFixedGmst(scratchTrailTeme, p.gmst, scratchTrailFixed);
+            } else {
+              scratchTrailFixed.x = scratchTrailTeme.x;
+              scratchTrailFixed.y = scratchTrailTeme.y;
+              scratchTrailFixed.z = scratchTrailTeme.z;
+            }
+          } else if (typeof p.gmst === "number") {
+            rotateTemeToFixedGmst(scratchTrailTeme, p.gmst, scratchTrailFixed);
+          } else {
+            scratchTrailFixed.x = scratchTrailTeme.x;
+            scratchTrailFixed.y = scratchTrailTeme.y;
+            scratchTrailFixed.z = scratchTrailTeme.z;
+          }
+          trailFixed.push({ x: scratchTrailFixed.x, y: scratchTrailFixed.y, z: scratchTrailFixed.z });
+
+          // Sub-satellite point on the ellipsoid (height=0) for ground track polyline.
+          const carto = Cesium.Cartographic.fromCartesian(
+            new Cesium.Cartesian3(scratchTrailFixed.x, scratchTrailFixed.y, scratchTrailFixed.z)
+          );
+          const ground = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 0);
+          groundTrackFixed.push({ x: ground.x, y: ground.y, z: ground.z });
+        });
+      }
+      updateTrail(trailFixed, groundTrackFixed);
       updateFootprint();
       applyFollowCamera();
+      updateSelectedLiveInfo();
     }
   };
 }
@@ -968,4 +1215,5 @@ buildViewer();
 setupControls();
 applyLayerVisibility();
 loadCatalog();
+loadCatalogStatus();
 startClock();

@@ -43,10 +43,11 @@ def _login(client: httpx.Client) -> None:
 def _build_gp_tle_query() -> str:
     base_url = settings.space_track_base_url.rstrip("/")
     # Limit to non-decayed objects, recent epochs, and 5-digit NORAD catalog IDs.
+    # Space-Track recommends limiting GP/TLE downloads to at most once per hour.
     return (
         f"{base_url}/basicspacedata/query/class/gp/"
         "decay_date/null-val/"
-        "epoch/%3Enow-30/"
+        "epoch/%3Enow-10/"
         "NORAD_CAT_ID/%3C100000/"
         "orderby/NORAD_CAT_ID/"
         "format/tle"

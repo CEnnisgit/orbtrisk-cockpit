@@ -2,8 +2,8 @@
 {% block content %}
 <section class="panel">
   <div class="panel-header">
-    <h2>Audit Log</h2>
-    <span class="panel-sub">Immutable, hash‑chained records</span>
+    <h2>History</h2>
+    <span class="panel-sub">Hash-chained records of decisions and actions.</span>
   </div>
 
   <form class="filters" method="get" action="/audit-ui">
@@ -54,7 +54,7 @@
         {% if ctx.maneuvers %}
           <ul class="risk-list">
             {% for m in ctx.maneuvers[:3] %}
-              <li>ΔV {{ "%.3f"|format(m.delta_v) }} | Risk after {{ "%.2f"|format(m.risk_after) }}</li>
+              <li>ΔV {{ "%.2f"|format(m.delta_v * 1000) }} m/s | Risk after {{ "%.2f"|format(m.risk_after) }}</li>
             {% endfor %}
           </ul>
         {% endif %}
