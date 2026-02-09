@@ -11,7 +11,7 @@ A minimal FastAPI implementation of the **Autonomous Space Risk & Collision Avoi
 ## Quick Start
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
@@ -33,6 +33,8 @@ Optional environment variables (see `app/settings.py`):
 - `SPACE_TRACK_SYNC_HOURS` (default: `1`)
 - `CESIUM_ION_TOKEN` (default: unset; enables Cesium Ion imagery/terrain)
 - `CESIUM_NIGHT_ASSET_ID` (default: unset; optional night lights layer)
+- `SESSION_SECRET` (default: dev value; set to a long random string)
+- `BUSINESS_ACCESS_CODE` (default: unset; enables business-only tabs and APIs)
 - `DEFAULT_HBR_M` (default: `10`; hard-body radius used for PoC computations)
 - `POC_ALERT_THRESHOLD` (default: `1e-4`; scales PoC into a 0–1 collision risk score)
 - `POC_NUM_ANGLE_STEPS` (default: `180`; angular resolution for PoC integration)
