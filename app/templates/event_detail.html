@@ -27,10 +27,16 @@
         <p><a class="secondary" href="/events/{{ event.id }}/report">Download PDF Report</a></p>
         <p>Miss distance: {{ "%.3f"|format(event.miss_distance) }} km</p>
         <p>Relative velocity: {{ "%.3f"|format(event.relative_velocity) }} km/s</p>
+        <p>Tier: <span class="pill {{ event.risk_tier }}">{{ event.risk_tier }}</span></p>
+        <p>Confidence: <span class="pill {{ event.confidence_label|lower }}">{{ event.confidence_label }}</span></p>
         {% if geometry %}
-          <p class="panel-sub">Geometry @TCA ({{ geometry.frame }})</p>
-          <p>r_rel (km): [{{ "%.3f"|format(geometry.relative_position_km[0]) }}, {{ "%.3f"|format(geometry.relative_position_km[1]) }}, {{ "%.3f"|format(geometry.relative_position_km[2]) }}]</p>
-          <p>v_rel (km/s): [{{ "%.3f"|format(geometry.relative_velocity_km_s[0]) }}, {{ "%.3f"|format(geometry.relative_velocity_km_s[1]) }}, {{ "%.3f"|format(geometry.relative_velocity_km_s[2]) }}]</p>
+          {% if geometry.r_rel_rtn_km and geometry.v_rel_rtn_km_s %}
+            <p class="panel-sub">Geometry @TCA (RTN projection)</p>
+            <p>r_rel RTN (km): [{{ "%.3f"|format(geometry.r_rel_rtn_km[0]) }}, {{ "%.3f"|format(geometry.r_rel_rtn_km[1]) }}, {{ "%.3f"|format(geometry.r_rel_rtn_km[2]) }}]</p>
+            <p>v_rel RTN (km/s): [{{ "%.3f"|format(geometry.v_rel_rtn_km_s[0]) }}, {{ "%.3f"|format(geometry.v_rel_rtn_km_s[1]) }}, {{ "%.3f"|format(geometry.v_rel_rtn_km_s[2]) }}]</p>
+          {% else %}
+            <p class="panel-sub">Geometry @TCA (RTN projection not available)</p>
+          {% endif %}
         {% endif %}
         <form class="form compact" method="post" action="/events-ui/{{ event.id }}/status">
           <div class="form-row">
@@ -45,30 +51,22 @@
         </form>
       </div>
       <div class="card">
-        <h3>Risk</h3>
-        {% if risk %}
-          <div class="risk-score">Risk score: {{ "%.2f"|format(risk.risk_score) }}</div>
-          <div class="panel-sub">PoC: {{ "%.6g"|format(risk.poc) }}</div>
-          <div class="risk-bar">
-            <span style="width: {{ risk.risk_score * 100 }}%"></span>
-          </div>
-          <details class="details">
-            <summary>Why this score?</summary>
-            <ul class="risk-list">
-              {% for key, value in risk.components_json.items() %}
-                <li>
-                  {{ key }}:
-                  {% if value is number %}
-                    {{ "%.6g"|format(value) }}
-                  {% else %}
-                    {{ value }}
-                  {% endif %}
-                </li>
-              {% endfor %}
-            </ul>
-          </details>
+        <h3>Screening Risk</h3>
+        <div class="risk-score">Risk score: {{ "%.2f"|format(event.risk_score) }}</div>
+        {% if update %}
+          <div class="panel-sub">Top drivers: {{ (update.drivers_json or [])|join(', ') }}</div>
+          {% if update.details_json and update.details_json.components %}
+            <details class="details">
+              <summary>Why this tier?</summary>
+              <ul class="risk-list">
+                {% for key, value in update.details_json.components.items() %}
+                  <li>{{ key }}: {{ "%.3f"|format(value) }}</li>
+                {% endfor %}
+              </ul>
+            </details>
+          {% endif %}
         {% else %}
-          <p>No risk assessment available.</p>
+          <p class="panel-sub">No update details available.</p>
         {% endif %}
       </div>
       <div class="card">
@@ -113,7 +111,7 @@
           </div>
           <div class="form-row">
             <label>Primary Risk Driver</label>
-            <input type="text" name="decision_driver" placeholder="collision_probability" />
+            <input type="text" name="decision_driver" placeholder="min_separation" />
           </div>
           <div class="form-row">
             <label>Assumptions</label>
@@ -140,28 +138,62 @@
       </div>
     </div>
     <div class="panel-subsection">
-      <h3>Recommended Maneuvers</h3>
+      <h3>Evolution</h3>
       <div class="table">
         <div class="table-row header">
-          <span>Delta-V (m/s)</span>
-          <span>Window Start</span>
-          <span>Window End</span>
-          <span>Risk After</span>
-          <span>Fuel (m/s eq.)</span>
+          <span>Computed</span>
+          <span>Miss (km)</span>
+          <span>Tier</span>
+          <span>Conf</span>
         </div>
-        {% for option in maneuvers %}
-        <div class="table-row {% if option.is_recommended %}recommended{% endif %}">
-          <span>{{ "%.2f"|format(option.delta_v * 1000) }}</span>
-          <span>{{ option.time_window_start }}</span>
-          <span>{{ option.time_window_end }}</span>
-          <span>{{ "%.2f"|format(option.risk_after) }}</span>
-          <span>{{ "%.2f"|format(option.fuel_cost) }}</span>
+        {% for upd in updates %}
+        <div class="table-row">
+          <span class="mono">{{ upd.computed_at }}</span>
+          <span>{{ "%.3f"|format(upd.miss_distance_km) }}</span>
+          <span class="pill {{ upd.risk_tier }}">{{ upd.risk_tier }}</span>
+          <span class="pill {{ upd.confidence_label|lower }}">{{ upd.confidence_label }}</span>
         </div>
         {% else %}
-        <div class="table-row empty">No maneuvers generated.</div>
+        <div class="table-row empty">No history yet.</div>
         {% endfor %}
       </div>
     </div>
+
+    {% if update and update.id %}
+    <div class="panel-subsection">
+      <h3>Visuals</h3>
+      <div class="grid">
+        <div class="card">
+          <h4>Miss Distance vs Time</h4>
+          <canvas id="missDistanceChart" height="160"></canvas>
+        </div>
+        <div class="card">
+          <h4>RTN Relative Motion (R vs T)</h4>
+          {% if not update.r_rel_rtn_km %}
+            <p class="panel-sub">RTN plot is available for TLE screening updates.</p>
+          {% endif %}
+          <canvas id="rtnRTChart" height="160"></canvas>
+        </div>
+        <div class="card">
+          <h4>RTN Normal (N vs time)</h4>
+          {% if not update.r_rel_rtn_km %}
+            <p class="panel-sub">RTN plot is available for TLE screening updates.</p>
+          {% endif %}
+          <canvas id="rtnNChart" height="160"></canvas>
+        </div>
+        <div class="card">
+          <h4>Evolution (Miss @TCA)</h4>
+          <canvas id="evolutionChart" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/vendor/chart.umd.min.js"></script>
+    <script src="/static/event-charts.js"></script>
+    <script>
+      window.renderEventCharts({{ event.id }}, {{ update.id }});
+    </script>
+    {% endif %}
   {% endif %}
 </section>
 {% endblock %}

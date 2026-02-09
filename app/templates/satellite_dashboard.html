@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  {% if not satellite %}
+    <h2>Satellite Not Found</h2>
+  {% else %}
+    <div class="panel-header">
+      <div>
+        <h2>{{ satellite.name }}</h2>
+        <span class="panel-sub">Next {{ horizon_days }} days · Active conjunctions</span>
+      </div>
+      <form method="post" action="/satellites-ui/{{ satellite.id }}/screen">
+        <button class="primary" type="submit">Run Screening Now</button>
+      </form>
+    </div>
+
+    {% if last_screened_at %}
+      <div class="notice">
+        Last screened: {{ last_screened_at }}
+      </div>
+    {% endif %}
+
+    <div class="table">
+      <div class="table-row header triage">
+        <span>Event</span>
+        <span>TCA</span>
+        <span>Tier</span>
+        <span>Conf</span>
+        <span>Miss (km)</span>
+        <span>Rel v (km/s)</span>
+        <span>Object</span>
+      </div>
+      {% for item in events %}
+      <a class="table-row triage" href="/events-ui?event_id={{ item.event.id }}">
+        <span>#{{ item.event.id }}</span>
+        <span class="mono">
+          {% if item.time_to_tca_hours >= 0 %}
+            in {{ "%.1f"|format(item.time_to_tca_hours) }}h
+          {% else %}
+            {{ "%.1f"|format(-item.time_to_tca_hours) }}h ago
+          {% endif %}
+        </span>
+        <span class="pill {{ item.event.risk_tier }}">{{ item.event.risk_tier }}</span>
+        <span class="pill {{ item.event.confidence_label|lower }}">{{ item.event.confidence_label }}</span>
+        <span>{{ "%.3f"|format(item.event.miss_distance) }}</span>
+        <span>{{ "%.3f"|format(item.event.relative_velocity) }}</span>
+        <span>{{ item.object_name or '-' }}</span>
+      </a>
+      {% else %}
+      <div class="table-row empty">No active events in the next {{ horizon_days }} days.</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
+

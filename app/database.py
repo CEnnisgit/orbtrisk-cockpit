@@ -47,6 +47,12 @@ def _ensure_sqlite_columns(engine):
         return
     with engine.connect() as conn:
         _ensure_orbit_states_schema(conn)
+
+        res = conn.exec_driver_sql("PRAGMA table_info(satellites)")
+        columns = {row[1] for row in res}
+        if "space_object_id" not in columns:
+            conn.exec_driver_sql("ALTER TABLE satellites ADD COLUMN space_object_id INTEGER")
+
         res = conn.exec_driver_sql("PRAGMA table_info(conjunction_events)")
         columns = {row[1] for row in res}
         if "status" not in columns:
@@ -55,7 +61,41 @@ def _ensure_sqlite_columns(engine):
             conn.exec_driver_sql("ALTER TABLE conjunction_events ADD COLUMN space_object_id INTEGER")
         except Exception:
             pass
+        if "risk_tier" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN risk_tier VARCHAR(32) DEFAULT 'unknown' NOT NULL"
+            )
+        if "risk_score" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN risk_score FLOAT DEFAULT 0.0 NOT NULL"
+            )
+        if "confidence_score" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN confidence_score FLOAT DEFAULT 0.0 NOT NULL"
+            )
+        if "confidence_label" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN confidence_label VARCHAR(8) DEFAULT 'D' NOT NULL"
+            )
+        if "current_update_id" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN current_update_id INTEGER"
+            )
+        if "last_seen_at" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN last_seen_at DATETIME"
+            )
+        if "is_active" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conjunction_events ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL"
+            )
         conn.exec_driver_sql("UPDATE conjunction_events SET status = 'open' WHERE status IS NULL")
+        conn.exec_driver_sql("UPDATE conjunction_events SET risk_tier = 'unknown' WHERE risk_tier IS NULL")
+        conn.exec_driver_sql("UPDATE conjunction_events SET confidence_label = 'D' WHERE confidence_label IS NULL")
+        conn.exec_driver_sql("UPDATE conjunction_events SET is_active = 1 WHERE is_active IS NULL")
+
+        # NOTE: We intentionally do not drop deprecated tables in SQLite.
+        # This keeps migrations safe and preserves historical data.
         res = conn.exec_driver_sql("PRAGMA table_info(decisions)")
         columns = {row[1] for row in res}
         if "status_after" not in columns:
@@ -76,11 +116,25 @@ def _ensure_orbit_states_schema(conn):
     if not columns:
         return
 
-    satellite_not_null = columns.get("satellite_id", (None, None, None, 0))[3] == 1
-    has_space_object = "space_object_id" in columns
-
-    if not satellite_not_null and has_space_object:
+    expected = {
+        "id",
+        "satellite_id",
+        "space_object_id",
+        "epoch",
+        "frame",
+        "valid_from",
+        "valid_to",
+        "state_vector",
+        "covariance",
+        "provenance_json",
+        "source_id",
+        "confidence",
+        "created_at",
+    }
+    if expected.issubset(set(columns.keys())):
         return
+
+    has_space_object_id = "space_object_id" in columns
 
     conn.exec_driver_sql("PRAGMA foreign_keys=off")
     conn.exec_driver_sql("ALTER TABLE orbit_states RENAME TO orbit_states_old")
@@ -91,8 +145,12 @@ def _ensure_orbit_states_schema(conn):
             satellite_id INTEGER,
             space_object_id INTEGER,
             epoch DATETIME NOT NULL,
+            frame VARCHAR(32) NOT NULL DEFAULT 'ECI',
+            valid_from DATETIME,
+            valid_to DATETIME,
             state_vector JSON NOT NULL,
             covariance JSON,
+            provenance_json JSON,
             source_id INTEGER NOT NULL,
             confidence FLOAT NOT NULL,
             created_at DATETIME NOT NULL,
@@ -103,11 +161,36 @@ def _ensure_orbit_states_schema(conn):
         """
     )
     conn.exec_driver_sql(
-        """
+        f"""
         INSERT INTO orbit_states (
-            id, satellite_id, epoch, state_vector, covariance, source_id, confidence, created_at
+            id,
+            satellite_id,
+            space_object_id,
+            epoch,
+            frame,
+            valid_from,
+            valid_to,
+            state_vector,
+            covariance,
+            provenance_json,
+            source_id,
+            confidence,
+            created_at
         )
-        SELECT id, satellite_id, epoch, state_vector, covariance, source_id, confidence, created_at
+        SELECT
+            id,
+            satellite_id,
+            {"space_object_id" if has_space_object_id else "NULL"},
+            epoch,
+            'ECI',
+            epoch,
+            NULL,
+            state_vector,
+            covariance,
+            NULL,
+            source_id,
+            confidence,
+            created_at
         FROM orbit_states_old
         """
     )

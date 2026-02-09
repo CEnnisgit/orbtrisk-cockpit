@@ -1,0 +1,12 @@
+services:
+  spaceproject:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./spaceops.db
+      - RAW_DATA_DIR=./data/raw
+    volumes:
+      - ./spaceops.db:/app/spaceops.db
+      - ./data:/app/data
+

@@ -1,12 +1,13 @@
 # SpaceProject MVP
 
-A minimal FastAPI implementation of the **Autonomous Space Risk & Collision Avoidance Platform** MVP. This repository provides:
+A minimal FastAPI implementation of an **operator-first orbital conjunction decision-support tool**. This repository provides:
 
 - Multi-source orbit state ingestion with provenance
-- Conjunction detection and risk scoring
-- Maneuver recommendation generation
+- TLE + SGP4 short-horizon screening (≤14 days)
+- Conjunction event deduplication + evolution history
+- Screening-level risk tiering (Low / Watch / High) with explicit confidence
 - Human-in-the-loop decisions with audit logging
-- API and minimal dashboard UI
+- API and lightweight dashboard UI
 
 ## Quick Start
 
@@ -35,9 +36,12 @@ Optional environment variables (see `app/settings.py`):
 - `CESIUM_NIGHT_ASSET_ID` (default: unset; optional night lights layer)
 - `SESSION_SECRET` (default: dev value; set to a long random string)
 - `BUSINESS_ACCESS_CODE` (default: unset; enables business-only tabs and APIs)
-- `DEFAULT_HBR_M` (default: `10`; hard-body radius used for PoC computations)
-- `POC_ALERT_THRESHOLD` (default: `1e-4`; scales PoC into a 0–1 collision risk score)
-- `POC_NUM_ANGLE_STEPS` (default: `180`; angular resolution for PoC integration)
+- `SCREENING_HORIZON_DAYS` (default: `14`)
+- `SCREENING_VOLUME_KM` (default: `10.0`)
+- `TIME_CRITICAL_HOURS` (default: `72`)
+- `TLE_MAX_AGE_HOURS_FOR_CONFIDENCE` (default: `72`)
+- `ORBIT_STATE_RETENTION_DAYS` (default: `30`)
+- `TLE_RECORD_RETENTION_DAYS` (default: `90`)
 
 ## Best Public TLE Accuracy (Space-Track)
 
@@ -55,7 +59,7 @@ If you want the best public TLE freshness (and the most accurate results you can
 
 ## Notes
 
-This MVP uses simplified physics models for risk and conjunctions. It is intentionally designed for clarity and extendability over physical fidelity.
+This MVP is a screening tool: it does not claim high-precision prediction. It is intentionally designed for clarity and extendability over physical fidelity.
 
 
 ## Example Ingestion
@@ -70,21 +74,19 @@ curl -X POST http://127.0.0.1:8000/ingest/orbit-state   -H 'Content-Type: applic
   }'
 ```
 
-## CDM-Lite Ingestion (Covariance-Based PoC)
+## CDM-Lite Attachment
 
-This MVP also supports ingesting a simplified CDM-like payload (relative state + combined position covariance at TCA):
+This MVP supports attaching a simplified CDM-like payload (relative state + combined position covariance at TCA) to an existing event:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/ingest/cdm -H 'Content-Type: application/json' -d '{
+curl -X POST http://127.0.0.1:8000/events/1/cdm -H 'Content-Type: application/json' -d '{
   "tca": "2026-02-04T00:00:00Z",
   "relative_position_km": [0.02, 0.0, 0.0],
   "relative_velocity_km_s": [0.0, 0.01, 0.0],
   "combined_pos_covariance_km2": [[1,0,0],[0,1,0],[0,0,1]],
   "hard_body_radius_m": 10,
   "source": {"name": "cdm", "type": "public"},
-  "satellite": {"name": "Alpha", "orbit_regime": "LEO", "status": "active"},
-  "secondary_norad_cat_id": 12345,
-  "secondary_name": "CATALOG-OBJECT"
+  "override_secondary": true
 }'
 ```
 

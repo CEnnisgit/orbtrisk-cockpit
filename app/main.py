@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Request, Form
+from fastapi import Depends, FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,11 +12,23 @@ from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.routes import ingestion, satellites, events, decisions, audit, webhooks, catalog, ai, solar
+from app.api.routes import (
+    ingestion,
+    satellites,
+    events,
+    decisions,
+    audit,
+    webhooks,
+    catalog,
+    ai,
+    solar,
+    screening,
+    cdm,
+)
 from app.database import get_db, init_db
 from app import models
 from app import auth
-from app.services import demo, conjunction, risk, maneuver, propagation, catalog_sync
+from app.services import demo, propagation, catalog_sync
 from app.settings import settings
 
 app = FastAPI(title="Space Risk & Collision Avoidance MVP")
@@ -37,6 +49,8 @@ app.include_router(webhooks.router, tags=["webhooks"])
 app.include_router(catalog.router, tags=["catalog"])
 app.include_router(ai.router, tags=["ai"])
 app.include_router(solar.router, tags=["solar"])
+app.include_router(screening.router, tags=["screening"])
+app.include_router(cdm.router, tags=["cdm"])
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -107,6 +121,12 @@ def on_startup():
     try:
         demo.seed_runbooks(db)
         db.commit()
+        try:
+            from app.services import screening
+
+            screening.cleanup_retention(db)
+        except Exception:
+            pass
     finally:
         db.close()
     catalog_sync.start_scheduler()
@@ -116,11 +136,7 @@ def on_startup():
 def dashboard(request: Request, db: Session = Depends(get_db)):
     satellite_count = db.query(models.Satellite).count()
     event_count = db.query(models.ConjunctionEvent).count()
-    high_risk = (
-        db.query(models.RiskAssessment)
-        .filter(models.RiskAssessment.risk_score >= 0.7)
-        .count()
-    )
+    high_risk = db.query(models.ConjunctionEvent).filter(models.ConjunctionEvent.risk_tier == "high").count()
     catalog_count = (
         db.query(models.SpaceObject)
         .filter(models.SpaceObject.is_operator_asset.is_(False))
@@ -176,31 +192,19 @@ def events_ui(
     query = db.query(models.ConjunctionEvent)
     if status:
         query = query.filter(models.ConjunctionEvent.status == status)
+    active_only = True
+    if window == "all":
+        active_only = False
+        window = None
     if window in {"24h", "72h", "7d"}:
         hours = {"24h": 24, "72h": 72, "7d": 168}[window]
         cutoff = datetime.utcnow() + timedelta(hours=hours)
         query = query.filter(models.ConjunctionEvent.tca <= cutoff)
+    if active_only:
+        query = query.filter(models.ConjunctionEvent.is_active.is_(True))
     events = query.all()
 
-    # Batch-load latest RiskAssessment per event (fix N+1)
-    event_ids = [e.id for e in events]
-    risk_map: Dict[int, models.RiskAssessment] = {}
-    if event_ids:
-        latest_risk_subq = (
-            db.query(
-                models.RiskAssessment.event_id,
-                func.max(models.RiskAssessment.id).label("max_id"),
-            )
-            .filter(models.RiskAssessment.event_id.in_(event_ids))
-            .group_by(models.RiskAssessment.event_id)
-            .subquery()
-        )
-        latest_risks = (
-            db.query(models.RiskAssessment)
-            .join(latest_risk_subq, models.RiskAssessment.id == latest_risk_subq.c.max_id)
-            .all()
-        )
-        risk_map = {r.event_id: r for r in latest_risks}
+    # No separate risk assessment table: fields live on ConjunctionEvent.
 
     # Batch-load SpaceObjects
     so_ids = {e.space_object_id for e in events if e.space_object_id}
@@ -218,18 +222,10 @@ def events_ui(
 
     items = []
     for event in events:
-        risk_assessment = risk_map.get(event.id)
-        risk_score = risk_assessment.risk_score if risk_assessment else None
-        band = None
-        if risk_score is not None:
-            if risk_score >= 0.7:
-                band = "high"
-            elif risk_score >= 0.4:
-                band = "medium"
-            else:
-                band = "low"
+        risk_score = float(event.risk_score or 0.0)
+        band = event.risk_tier or "unknown"
         if risk_band:
-            if risk_score is None or risk_band != band:
+            if risk_band != band:
                 continue
         space_object = so_map.get(event.space_object_id) if event.space_object_id else None
         object_name = None
@@ -262,26 +258,15 @@ def events_ui(
     )
 
     selected = None
-    selected_risk = None
-    selected_maneuvers = []
+    selected_update = None
     selected_decision = None
     selected_runbook = None
     selected_object = None
     if event_id:
         selected = db.get(models.ConjunctionEvent, event_id)
         if selected:
-            selected_risk = (
-                db.query(models.RiskAssessment)
-                .filter(models.RiskAssessment.event_id == event_id)
-                .order_by(models.RiskAssessment.id.desc())
-                .first()
-            )
-            selected_maneuvers = (
-                db.query(models.ManeuverOption)
-                .filter(models.ManeuverOption.event_id == event_id)
-                .order_by(models.ManeuverOption.risk_after.asc())
-                .all()
-            )
+            if selected.current_update_id:
+                selected_update = db.get(models.ConjunctionEventUpdate, int(selected.current_update_id))
             selected_decision = (
                 db.query(models.Decision)
                 .filter(models.Decision.event_id == event_id)
@@ -290,18 +275,12 @@ def events_ui(
             )
             if selected.space_object_id:
                 selected_object = db.get(models.SpaceObject, selected.space_object_id)
-            band = None
-            if selected_risk:
-                if selected_risk.risk_score >= 0.7:
-                    band = "high"
-                elif selected_risk.risk_score >= 0.4:
-                    band = "medium"
-                else:
-                    band = "low"
-            if band:
+            band = selected.risk_tier
+            if band in {"high", "watch", "low"}:
+                rb = "medium" if band == "watch" else band
                 selected_runbook = (
                     db.query(models.Runbook)
-                    .filter(models.Runbook.risk_band == band)
+                    .filter(models.Runbook.risk_band == rb)
                     .order_by(models.Runbook.id.desc())
                     .first()
                 )
@@ -310,6 +289,7 @@ def events_ui(
     filter_query = urlencode({k: v for k, v in filter_params.items() if v})
     presets = {
         "High Risk": urlencode({"risk_band": "high"}),
+        "Watch": urlencode({"risk_band": "watch"}),
         "Time-Critical": urlencode({"window": "24h"}),
         "Unreviewed": urlencode({"status": "open"}),
     }
@@ -322,8 +302,7 @@ def events_ui(
             "filters": {"status": status, "risk_band": risk_band, "window": window},
             "filter_query": filter_query,
             "selected": selected,
-            "selected_risk": selected_risk,
-            "selected_maneuvers": selected_maneuvers,
+            "selected_update": selected_update,
             "selected_decision": selected_decision,
             "selected_runbook": selected_runbook,
             "selected_object": selected_object,
@@ -353,16 +332,12 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
             "event_detail.html",
             {"request": request, "event": None},
         )
-    risk = (
-        db.query(models.RiskAssessment)
-        .filter(models.RiskAssessment.event_id == event_id)
-        .order_by(models.RiskAssessment.id.desc())
-        .first()
-    )
-    maneuvers = (
-        db.query(models.ManeuverOption)
-        .filter(models.ManeuverOption.event_id == event_id)
-        .order_by(models.ManeuverOption.risk_after.asc())
+    update = db.get(models.ConjunctionEventUpdate, int(event.current_update_id)) if event.current_update_id else None
+    updates = (
+        db.query(models.ConjunctionEventUpdate)
+        .filter(models.ConjunctionEventUpdate.event_id == event_id)
+        .order_by(models.ConjunctionEventUpdate.computed_at.desc())
+        .limit(20)
         .all()
     )
     decision = (
@@ -371,20 +346,16 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
         .order_by(models.Decision.id.desc())
         .first()
     )
-    geometry = db.get(models.EventGeometry, event_id)
     space_object = None
     if event.space_object_id:
         space_object = db.get(models.SpaceObject, event.space_object_id)
     runbook = None
-    if risk:
-        band = "low"
-        if risk.risk_score >= 0.7:
-            band = "high"
-        elif risk.risk_score >= 0.4:
-            band = "medium"
+    band = event.risk_tier
+    if band in {"high", "watch", "low"}:
+        rb = "medium" if band == "watch" else band
         runbook = (
             db.query(models.Runbook)
-            .filter(models.Runbook.risk_band == band)
+            .filter(models.Runbook.risk_band == rb)
             .order_by(models.Runbook.id.desc())
             .first()
         )
@@ -394,12 +365,12 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
             "request": request,
             "event": event,
             "time_to_tca_hours": (event.tca - datetime.utcnow()).total_seconds() / 3600.0,
-            "risk": risk,
-            "maneuvers": maneuvers,
+            "update": update,
+            "updates": updates,
             "decision": decision,
             "runbook": runbook,
             "space_object": space_object,
-            "geometry": geometry,
+            "geometry": update,
         },
     )
 
@@ -423,6 +394,72 @@ def satellites_ui(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/satellites-ui/{satellite_id}", response_class=HTMLResponse)
+def satellite_dashboard_ui(satellite_id: int, request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
+    satellite = db.get(models.Satellite, satellite_id)
+    if not satellite:
+        return templates.TemplateResponse("satellite_dashboard.html", {"request": request, "satellite": None})
+
+    now = datetime.utcnow()
+    horizon = int(settings.screening_horizon_days)
+    cutoff = now + timedelta(days=horizon)
+    events = (
+        db.query(models.ConjunctionEvent)
+        .filter(models.ConjunctionEvent.satellite_id == satellite_id)
+        .filter(models.ConjunctionEvent.is_active.is_(True))
+        .filter(models.ConjunctionEvent.tca <= cutoff)
+        .order_by(models.ConjunctionEvent.tca.asc())
+        .all()
+    )
+
+    so_ids = {e.space_object_id for e in events if e.space_object_id}
+    so_map = {}
+    if so_ids:
+        space_objects = db.query(models.SpaceObject).filter(models.SpaceObject.id.in_(so_ids)).all()
+        so_map = {so.id: so for so in space_objects}
+
+    items = []
+    for event in events:
+        space_object = so_map.get(event.space_object_id) if event.space_object_id else None
+        items.append(
+            {
+                "event": event,
+                "time_to_tca_hours": (event.tca - now).total_seconds() / 3600.0,
+                "object_name": space_object.name if space_object else None,
+            }
+        )
+
+    last_seen = (
+        db.query(func.max(models.ConjunctionEvent.last_seen_at))
+        .filter(models.ConjunctionEvent.satellite_id == satellite_id)
+        .scalar()
+    )
+
+    return templates.TemplateResponse(
+        "satellite_dashboard.html",
+        {
+            "request": request,
+            "satellite": satellite,
+            "events": items,
+            "horizon_days": horizon,
+            "last_screened_at": last_seen,
+        },
+    )
+
+
+@app.post("/satellites-ui/{satellite_id}/screen")
+def satellite_screen_ui(satellite_id: int, request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
+    sat = db.get(models.Satellite, satellite_id)
+    if not sat:
+        return RedirectResponse(url="/satellites-ui", status_code=303)
+    from app.services import screening
+
+    screening.screen_satellite(db, satellite_id)
+    return RedirectResponse(url=f"/satellites-ui/{satellite_id}", status_code=303)
+
+
 @app.post("/satellites-ui")
 def satellites_create_ui(
     request: Request,
@@ -436,12 +473,37 @@ def satellites_create_ui(
     _require_business_ui(request)
     if not name:
         return RedirectResponse(url="/satellites-ui", status_code=303)
+    # Link satellite to a single SpaceObject identity.
+    norad_id = int(str(catalog_id)) if catalog_id and str(catalog_id).isdigit() else None
+    space_object = None
+    if norad_id is not None:
+        space_object = db.query(models.SpaceObject).filter(models.SpaceObject.norad_cat_id == norad_id).first()
+    if space_object is None:
+        space_object = db.query(models.SpaceObject).filter(models.SpaceObject.name == name).first()
+    if space_object is None:
+        space_object = models.SpaceObject(
+            norad_cat_id=norad_id,
+            name=name,
+            object_type="PAYLOAD",
+            international_designator=None,
+            source_id=None,
+            is_operator_asset=True,
+        )
+        db.add(space_object)
+        db.flush()
+    else:
+        if not space_object.is_operator_asset:
+            space_object.is_operator_asset = True
+        if norad_id is not None and space_object.norad_cat_id is None:
+            space_object.norad_cat_id = norad_id
+
     satellite = models.Satellite(
         name=name,
         operator_id=operator_id,
         catalog_id=catalog_id,
         orbit_regime=orbit_regime,
         status=status,
+        space_object_id=space_object.id,
     )
     db.add(satellite)
     db.commit()
@@ -578,25 +640,15 @@ def ingest_ui_post(
         db.add(source)
         db.flush()
 
-    space_object = None
-    if satellite.catalog_id and str(satellite.catalog_id).isdigit():
-        norad_id = int(str(satellite.catalog_id))
-        space_object = (
-            db.query(models.SpaceObject)
-            .filter(models.SpaceObject.norad_cat_id == norad_id)
-            .filter(models.SpaceObject.is_operator_asset.is_(True))
-            .first()
-        )
-    if not space_object:
-        space_object = (
-            db.query(models.SpaceObject)
-            .filter(models.SpaceObject.name == satellite.name)
-            .filter(models.SpaceObject.is_operator_asset.is_(True))
-            .first()
-        )
-    if not space_object:
+    space_object = satellite.space_object
+    norad_id = int(str(satellite.catalog_id)) if satellite.catalog_id and str(satellite.catalog_id).isdigit() else None
+    if space_object is None and norad_id is not None:
+        space_object = db.query(models.SpaceObject).filter(models.SpaceObject.norad_cat_id == norad_id).first()
+    if space_object is None:
+        space_object = db.query(models.SpaceObject).filter(models.SpaceObject.name == satellite.name).first()
+    if space_object is None:
         space_object = models.SpaceObject(
-            norad_cat_id=int(satellite.catalog_id) if satellite.catalog_id and str(satellite.catalog_id).isdigit() else None,
+            norad_cat_id=norad_id,
             name=satellite.name,
             object_type="PAYLOAD",
             international_designator=None,
@@ -605,6 +657,13 @@ def ingest_ui_post(
         )
         db.add(space_object)
         db.flush()
+    else:
+        if not space_object.is_operator_asset:
+            space_object.is_operator_asset = True
+        if norad_id is not None and space_object.norad_cat_id is None:
+            space_object.norad_cat_id = norad_id
+    if satellite.space_object_id != space_object.id:
+        satellite.space_object_id = space_object.id
 
     vector = [float(x.strip()) for x in state_vector.split(",") if x.strip()]
     if len(vector) != 6:
@@ -614,56 +673,23 @@ def ingest_ui_post(
         satellite_id=satellite.id,
         space_object_id=space_object.id if space_object else None,
         epoch=datetime.fromisoformat(epoch.replace("Z", "+00:00")),
+        frame="ECI",
+        valid_from=datetime.fromisoformat(epoch.replace("Z", "+00:00")),
+        valid_to=None,
         state_vector=vector,
         covariance=propagation.default_covariance(source.type),
+        provenance_json={"raw_path": ingestion.write_raw_snapshot({"epoch": epoch, "state_vector": vector})},
         source_id=source.id,
         confidence=confidence,
     )
     db.add(orbit_state)
     db.flush()
 
-    events = conjunction.detect_events_for_state(db, orbit_state)
-    db.flush()
-    for event in events:
-        sigma = getattr(event, "_sigma_km", propagation.extract_sigma(orbit_state.covariance))
-        poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
-        db.add(
-            models.RiskAssessment(
-                event_id=event.id,
-                poc=poc,
-                risk_score=risk_score,
-                components_json=components,
-                sensitivity_json=sensitivity,
-            )
-        )
-        r_rel = getattr(event, "_r_rel_km", None)
-        v_rel = getattr(event, "_v_rel_km_s", None)
-        if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
-            db.merge(
-                models.EventGeometry(
-                    event_id=event.id,
-                    frame="ECI",
-                    relative_position_km=r_rel,
-                    relative_velocity_km_s=v_rel,
-                    combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
-                )
-            )
-        options = maneuver.generate_options(event, risk_score)
-        for option in options:
-            db.add(
-                models.ManeuverOption(
-                    event_id=event.id,
-                    delta_v=option["delta_v"],
-                    time_window_start=option["time_window_start"],
-                    time_window_end=option["time_window_end"],
-                    risk_after=option["risk_after"],
-                    fuel_cost=option["fuel_cost"],
-                    is_recommended=option["is_recommended"],
-                )
-            )
-
     db.commit()
-    return RedirectResponse(url="/events-ui", status_code=303)
+    from app.services import screening
+
+    screening.screen_satellite(db, satellite.id)
+    return RedirectResponse(url=f"/satellites-ui/{satellite.id}", status_code=303)
 
 
 @app.post("/events-ui/{event_id}/decide")
@@ -759,29 +785,15 @@ def audit_ui(
 
     context_entries = []
     for entry in entries:
-        context = {"entry": entry, "decision": None, "event": None, "risk": None, "maneuvers": []}
+        context = {"entry": entry, "decision": None, "event": None}
         if entry.entity_type == "decision":
             decision = db.get(models.Decision, entry.entity_id)
             if decision:
                 event = db.get(models.ConjunctionEvent, decision.event_id)
-                risk = (
-                    db.query(models.RiskAssessment)
-                    .filter(models.RiskAssessment.event_id == decision.event_id)
-                    .order_by(models.RiskAssessment.id.desc())
-                    .first()
-                )
-                maneuvers = (
-                    db.query(models.ManeuverOption)
-                    .filter(models.ManeuverOption.event_id == decision.event_id)
-                    .order_by(models.ManeuverOption.risk_after.asc())
-                    .all()
-                )
                 context.update(
                     {
                         "decision": decision,
                         "event": event,
-                        "risk": risk,
-                        "maneuvers": maneuvers,
                     }
                 )
         context_entries.append(context)

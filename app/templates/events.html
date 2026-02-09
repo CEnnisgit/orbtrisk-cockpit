@@ -31,7 +31,7 @@
       <select name="risk_band">
         <option value="">All</option>
         <option value="high" {% if filters.risk_band == 'high' %}selected{% endif %}>High</option>
-        <option value="medium" {% if filters.risk_band == 'medium' %}selected{% endif %}>Medium</option>
+        <option value="watch" {% if filters.risk_band == 'watch' %}selected{% endif %}>Watch</option>
         <option value="low" {% if filters.risk_band == 'low' %}selected{% endif %}>Low</option>
       </select>
     </div>
@@ -42,6 +42,7 @@
         <option value="24h" {% if filters.window == '24h' %}selected{% endif %}>24h</option>
         <option value="72h" {% if filters.window == '72h' %}selected{% endif %}>72h</option>
         <option value="7d" {% if filters.window == '7d' %}selected{% endif %}>7d</option>
+        <option value="all" {% if filters.window == 'all' %}selected{% endif %}>Include inactive</option>
       </select>
     </div>
     <button class="primary" type="submit">Apply</button>
@@ -60,8 +61,8 @@
           <span>Event</span>
           <span>Status</span>
           <span>TCA</span>
-          <span>Risk</span>
-          <span>Band</span>
+          <span>Tier</span>
+          <span>Conf</span>
           <span>Object</span>
           <span>Type</span>
           <span>Miss (km)</span>
@@ -77,8 +78,8 @@
               {{ "%.1f"|format(-item.time_to_tca_hours) }}h ago
             {% endif %}
           </span>
-          <span>{{ "%.2f"|format(item.risk_score or 0) }}</span>
           <span class="pill {{ item.risk_band or 'unknown' }}">{{ item.risk_band or 'unknown' }}</span>
+          <span class="pill {{ item.event.confidence_label|lower }}">{{ item.event.confidence_label }}</span>
           <span>{{ item.object_name or '-' }}</span>
           <span>{{ item.object_type or '-' }}</span>
           <span>{{ "%.3f"|format(item.event.miss_distance) }}</span>
@@ -120,32 +121,26 @@
             <p>Type: {{ selected_object.object_type if selected_object else '-' }}</p>
             <p>Miss distance: {{ "%.3f"|format(selected.miss_distance) }} km</p>
             <p>Relative velocity: {{ "%.3f"|format(selected.relative_velocity) }} km/s</p>
+            <p>Tier: <span class="pill {{ selected.risk_tier }}">{{ selected.risk_tier }}</span></p>
+            <p>Confidence: <span class="pill {{ selected.confidence_label|lower }}">{{ selected.confidence_label }}</span></p>
           </div>
           <div class="card">
-            <h4>Risk</h4>
-            {% if selected_risk %}
-              <div class="risk-score">Risk score: {{ "%.2f"|format(selected_risk.risk_score) }}</div>
-              <div class="panel-sub">PoC: {{ "%.6g"|format(selected_risk.poc) }}</div>
-              <div class="risk-bar">
-                <span style="width: {{ selected_risk.risk_score * 100 }}%"></span>
-              </div>
-              <details class="details">
-                <summary>Why this score?</summary>
-                <ul class="risk-list">
-                  {% for key, value in selected_risk.components_json.items() %}
-                    <li>
-                      {{ key }}:
-                      {% if value is number %}
-                        {{ "%.6g"|format(value) }}
-                      {% else %}
-                        {{ value }}
-                      {% endif %}
-                    </li>
-                  {% endfor %}
-                </ul>
-              </details>
+            <h4>Screening Risk</h4>
+            <div class="risk-score">Score: {{ "%.2f"|format(selected.risk_score or 0) }}</div>
+            {% if selected_update %}
+              <div class="panel-sub">Top drivers: {{ (selected_update.drivers_json or [])|join(', ') }}</div>
+              {% if selected_update.details_json and selected_update.details_json.components %}
+                <details class="details">
+                  <summary>Why this tier?</summary>
+                  <ul class="risk-list">
+                    {% for key, value in selected_update.details_json.components.items() %}
+                      <li>{{ key }}: {{ "%.3f"|format(value) }}</li>
+                    {% endfor %}
+                  </ul>
+                </details>
+              {% endif %}
             {% else %}
-              <p>No risk assessment available.</p>
+              <p class="panel-sub">No update details available.</p>
             {% endif %}
           </div>
           <div class="card">
@@ -192,7 +187,7 @@
             </div>
             <div class="form-row">
               <label>Primary Risk Driver</label>
-              <input type="text" name="decision_driver" placeholder="collision_probability" />
+              <input type="text" name="decision_driver" placeholder="min_separation" />
             </div>
             <div class="form-row">
               <label>Assumptions</label>
@@ -219,28 +214,19 @@
         </div>
 
         <div class="panel-subsection">
-          <h4>Recommended Maneuvers</h4>
-          <div class="table">
-            <div class="table-row header">
-              <span>Delta-V (m/s)</span>
-              <span>Window Start</span>
-              <span>Window End</span>
-              <span>Risk After</span>
-              <span>Fuel (m/s eq.)</span>
-            </div>
-            {% for option in selected_maneuvers %}
-            <div class="table-row {% if option.is_recommended %}recommended{% endif %}">
-              <span>{{ "%.2f"|format(option.delta_v * 1000) }}</span>
-              <span>{{ option.time_window_start }}</span>
-              <span>{{ option.time_window_end }}</span>
-              <span>{{ "%.2f"|format(option.risk_after) }}</span>
-              <span>{{ "%.2f"|format(option.fuel_cost) }}</span>
-            </div>
-            {% else %}
-            <div class="table-row empty">No maneuvers generated.</div>
-            {% endfor %}
-          </div>
+          <h4>What Changed</h4>
+          {% if selected_update %}
+            <p class="panel-sub">Latest update at {{ selected_update.computed_at }}</p>
+          {% else %}
+            <p class="panel-sub">No update history yet.</p>
+          {% endif %}
         </div>
+
+        {% if selected and selected.current_update_id %}
+          <div class="panel-subsection">
+            <a class="secondary" href="/events-ui/{{ selected.id }}">Open full detail</a>
+          </div>
+        {% endif %}
       {% endif %}
     </div>
   </div>

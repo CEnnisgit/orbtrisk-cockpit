@@ -9,8 +9,35 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import get_db
+from app.settings import settings
+from app.services import conjunction, propagation
+from app.services.state_sources import StateEstimate, build_state_estimate
 
 router = APIRouter()
+
+
+def _build_state_estimates(
+    db: Session, update: models.ConjunctionEventUpdate
+) -> tuple[Optional[StateEstimate], Optional[StateEstimate]]:
+    if not update.primary_orbit_state_id or not update.secondary_orbit_state_id:
+        return None, None
+    primary_state = db.get(models.OrbitState, int(update.primary_orbit_state_id))
+    secondary_state = db.get(models.OrbitState, int(update.secondary_orbit_state_id))
+    if primary_state is None or secondary_state is None:
+        return None, None
+    return build_state_estimate(db, primary_state), build_state_estimate(db, secondary_state)
+
+
+def _relative_state_at(primary: StateEstimate, secondary: StateEstimate, t: datetime) -> tuple[list[float], list[float]]:
+    s1 = primary.propagate(t)
+    s2 = secondary.propagate(t)
+    r1 = propagation.position_from_state(s1)
+    v1 = propagation.velocity_from_state(s1)
+    r2 = propagation.position_from_state(s2)
+    v2 = propagation.velocity_from_state(s2)
+    r_rel = [float(r2[i] - r1[i]) for i in range(3)]
+    v_rel = [float(v2[i] - v1[i]) for i in range(3)]
+    return r_rel, v_rel
 
 
 @router.get("/events", response_model=list[schemas.EventListItem])
@@ -19,6 +46,7 @@ def list_events(
     status: Optional[str] = Query(default=None),
     risk_band: Optional[str] = Query(default=None),
     window: Optional[str] = Query(default=None),
+    active_only: bool = Query(default=True),
     db: Session = Depends(get_db),
 ):
     query = db.query(models.ConjunctionEvent)
@@ -26,6 +54,8 @@ def list_events(
         query = query.filter(models.ConjunctionEvent.tca >= since)
     if status:
         query = query.filter(models.ConjunctionEvent.status == status)
+    if active_only:
+        query = query.filter(models.ConjunctionEvent.is_active.is_(True))
     if window in {"24h", "72h", "7d"}:
         hours = {"24h": 24, "72h": 72, "7d": 168}[window]
         cutoff = datetime.utcnow() + timedelta(hours=hours)
@@ -33,34 +63,24 @@ def list_events(
     events = query.all()
 
     response: list[schemas.EventListItem] = []
+    now = datetime.utcnow()
     for event in events:
-        risk_assessment = (
-            db.query(models.RiskAssessment)
-            .filter(models.RiskAssessment.event_id == event.id)
-            .order_by(models.RiskAssessment.id.desc())
-            .first()
-        )
-        risk_score = risk_assessment.risk_score if risk_assessment else None
         if risk_band:
-            if risk_score is None:
+            if risk_band not in {"high", "watch", "low"}:
                 continue
-            if risk_band == "high" and risk_score < 0.7:
-                continue
-            if risk_band == "medium" and not (0.4 <= risk_score < 0.7):
-                continue
-            if risk_band == "low" and risk_score >= 0.4:
+            if event.risk_tier != risk_band:
                 continue
         response.append(
             schemas.EventListItem(
                 event=schemas.ConjunctionEventOut.model_validate(event),
-                risk_score=risk_score,
+                time_to_tca_hours=(event.tca - now).total_seconds() / 3600.0,
             )
         )
 
     response.sort(
         key=lambda item: (
-            (item.event.tca - datetime.utcnow()).total_seconds(),
-            -(item.risk_score or 0.0),
+            (item.event.tca - now).total_seconds(),
+            -(item.event.risk_score or 0.0),
         )
     )
     return response
@@ -72,47 +92,182 @@ def get_event(event_id: int, db: Session = Depends(get_db)):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    risk_assessment = (
-        db.query(models.RiskAssessment)
-        .filter(models.RiskAssessment.event_id == event_id)
-        .order_by(models.RiskAssessment.id.desc())
-        .first()
-    )
-    maneuvers = (
-        db.query(models.ManeuverOption)
-        .filter(models.ManeuverOption.event_id == event_id)
-        .order_by(models.ManeuverOption.risk_after.asc())
+    updates = (
+        db.query(models.ConjunctionEventUpdate)
+        .filter(models.ConjunctionEventUpdate.event_id == event_id)
+        .order_by(models.ConjunctionEventUpdate.computed_at.desc())
+        .limit(50)
         .all()
     )
+    current_update = None
+    if event.current_update_id:
+        current_update = db.get(models.ConjunctionEventUpdate, int(event.current_update_id))
+
     decision = (
         db.query(models.Decision)
         .filter(models.Decision.event_id == event_id)
         .order_by(models.Decision.id.desc())
         .first()
     )
-    geometry = db.get(models.EventGeometry, event_id)
+
+    cdm_records = (
+        db.query(models.CdmRecord)
+        .filter(models.CdmRecord.event_id == event_id)
+        .order_by(models.CdmRecord.id.desc())
+        .all()
+    )
 
     return schemas.EventDetailOut(
         event=schemas.ConjunctionEventOut.model_validate(event),
-        risk=schemas.RiskAssessmentOut.model_validate(risk_assessment) if risk_assessment else None,
-        maneuvers=[schemas.ManeuverOptionOut.model_validate(m) for m in maneuvers],
+        current_update=schemas.ConjunctionEventUpdateOut.model_validate(current_update)
+        if current_update
+        else None,
+        updates=[schemas.ConjunctionEventUpdateOut.model_validate(u) for u in updates],
         decision=schemas.DecisionOut.model_validate(decision) if decision else None,
-        geometry=schemas.EventGeometryOut.model_validate(geometry) if geometry else None,
+        cdm_records=[schemas.CdmRecordOut.model_validate(r) for r in cdm_records],
     )
 
 
-@router.get("/events/{event_id}/recommendations", response_model=list[schemas.ManeuverOptionOut])
-def get_recommendations(event_id: int, db: Session = Depends(get_db)):
+@router.get("/events/{event_id}/series")
+def event_series(
+    event_id: int,
+    update_id: Optional[int] = None,
+    window_hours: Optional[float] = None,
+    step_seconds: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    maneuvers = (
-        db.query(models.ManeuverOption)
-        .filter(models.ManeuverOption.event_id == event_id)
-        .order_by(models.ManeuverOption.risk_after.asc())
-        .all()
-    )
-    return [schemas.ManeuverOptionOut.model_validate(m) for m in maneuvers]
+
+    if update_id is None:
+        update_id = int(event.current_update_id) if event.current_update_id else None
+    if update_id is None:
+        raise HTTPException(status_code=400, detail="No update_id available")
+    update = db.get(models.ConjunctionEventUpdate, int(update_id))
+    if not update or update.event_id != event.id:
+        raise HTTPException(status_code=404, detail="Update not found")
+
+    window_h = float(window_hours) if window_hours is not None else float(settings.series_window_hours)
+    step_s = int(step_seconds) if step_seconds is not None else int(settings.series_step_seconds)
+    window_h = max(0.5, min(24.0, window_h))
+    step_s = max(10, min(600, step_s))
+
+    t_start = update.tca - timedelta(hours=window_h)
+    t_end = update.tca + timedelta(hours=window_h)
+    times = []
+    miss = []
+
+    primary_est, secondary_est = _build_state_estimates(db, update)
+    if primary_est is not None and secondary_est is not None:
+        current = t_start
+        while current <= t_end:
+            try:
+                r_rel, _v_rel = _relative_state_at(primary_est, secondary_est, current)
+            except Exception:
+                times = []
+                miss = []
+                break
+            miss.append(float(propagation.norm(r_rel)))
+            times.append(current.isoformat())
+            current += timedelta(seconds=step_s)
+
+    if not times:
+        # Fallback: use a simple linearized relative motion model based on stored state at TCA.
+        current = t_start
+        while current <= t_end:
+            dt = (current - update.tca).total_seconds()
+            r = update.r_rel_eci_km
+            v = update.v_rel_eci_km_s
+            if not (isinstance(r, list) and isinstance(v, list) and len(r) == 3 and len(v) == 3):
+                break
+            r_t = [float(r[i]) + float(v[i]) * dt for i in range(3)]
+            miss.append(float(propagation.norm(r_t)))
+            times.append(current.isoformat())
+            current += timedelta(seconds=step_s)
+
+    return {"event_id": event_id, "update_id": update_id, "times": times, "miss_distance_km": miss}
+
+
+@router.get("/events/{event_id}/rtn-series")
+def event_rtn_series(
+    event_id: int,
+    update_id: Optional[int] = None,
+    window_hours: Optional[float] = None,
+    step_seconds: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    event = db.get(models.ConjunctionEvent, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    if update_id is None:
+        update_id = int(event.current_update_id) if event.current_update_id else None
+    if update_id is None:
+        raise HTTPException(status_code=400, detail="No update_id available")
+    update = db.get(models.ConjunctionEventUpdate, int(update_id))
+    if not update or update.event_id != event.id:
+        raise HTTPException(status_code=404, detail="Update not found")
+
+    window_h = float(window_hours) if window_hours is not None else float(settings.series_window_hours)
+    step_s = int(step_seconds) if step_seconds is not None else int(settings.series_step_seconds)
+    window_h = max(0.5, min(24.0, window_h))
+    step_s = max(10, min(600, step_s))
+
+    t_start = update.tca - timedelta(hours=window_h)
+    t_end = update.tca + timedelta(hours=window_h)
+    times: list[str] = []
+    r_vals: list[float] = []
+    t_vals: list[float] = []
+    n_vals: list[float] = []
+
+    primary_est, secondary_est = _build_state_estimates(db, update)
+    if primary_est is not None and secondary_est is not None:
+        try:
+            s1_tca = primary_est.propagate(update.tca)
+            basis = conjunction.rtn_basis_from_primary_state(
+                propagation.position_from_state(s1_tca),
+                propagation.velocity_from_state(s1_tca),
+            )
+        except Exception:
+            basis = None
+
+        if basis is not None:
+            current = t_start
+            while current <= t_end:
+                try:
+                    r_rel, _v_rel = _relative_state_at(primary_est, secondary_est, current)
+                except Exception:
+                    times = []
+                    r_vals = []
+                    t_vals = []
+                    n_vals = []
+                    break
+                vec = conjunction.project_to_rtn(r_rel, basis)
+                times.append(current.isoformat())
+                r_vals.append(float(vec[0]))
+                t_vals.append(float(vec[1]))
+                n_vals.append(float(vec[2]))
+                current += timedelta(seconds=step_s)
+
+    if not times:
+        # Fallback: linear model in RTN using the stored projection (available for TLE screening updates).
+        r0 = update.r_rel_rtn_km
+        v0 = update.v_rel_rtn_km_s
+        if not (isinstance(r0, list) and isinstance(v0, list) and len(r0) == 3 and len(v0) == 3):
+            return {"event_id": event_id, "update_id": update_id, "times": [], "r": [], "t": [], "n": []}
+
+        current = t_start
+        while current <= t_end:
+            dt = (current - update.tca).total_seconds()
+            vec = [float(r0[i]) + float(v0[i]) * dt for i in range(3)]
+            times.append(current.isoformat())
+            r_vals.append(vec[0])
+            t_vals.append(vec[1])
+            n_vals.append(vec[2])
+            current += timedelta(seconds=step_s)
+
+    return {"event_id": event_id, "update_id": update_id, "times": times, "r": r_vals, "t": t_vals, "n": n_vals}
 
 
 @router.get("/events/{event_id}/report")
@@ -121,40 +276,23 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    risk_assessment = (
-        db.query(models.RiskAssessment)
-        .filter(models.RiskAssessment.event_id == event_id)
-        .order_by(models.RiskAssessment.id.desc())
-        .first()
-    )
-    maneuvers = (
-        db.query(models.ManeuverOption)
-        .filter(models.ManeuverOption.event_id == event_id)
-        .order_by(models.ManeuverOption.risk_after.asc())
+    space_object = db.get(models.SpaceObject, event.space_object_id) if event.space_object_id else None
+
+    updates = (
+        db.query(models.ConjunctionEventUpdate)
+        .filter(models.ConjunctionEventUpdate.event_id == event_id)
+        .order_by(models.ConjunctionEventUpdate.computed_at.desc())
+        .limit(5)
         .all()
     )
+    current_update = db.get(models.ConjunctionEventUpdate, int(event.current_update_id)) if event.current_update_id else None
+
     decision = (
         db.query(models.Decision)
         .filter(models.Decision.event_id == event_id)
         .order_by(models.Decision.id.desc())
         .first()
     )
-    geometry = db.get(models.EventGeometry, event_id)
-    space_object = db.get(models.SpaceObject, event.space_object_id) if event.space_object_id else None
-
-    runbook = None
-    if risk_assessment:
-        band = "low"
-        if risk_assessment.risk_score >= 0.7:
-            band = "high"
-        elif risk_assessment.risk_score >= 0.4:
-            band = "medium"
-        runbook = (
-            db.query(models.Runbook)
-            .filter(models.Runbook.risk_band == band)
-            .order_by(models.Runbook.id.desc())
-            .first()
-        )
 
     if format != "pdf":
         raise HTTPException(status_code=400, detail="format must be pdf")
@@ -168,7 +306,7 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
 
     pdf.set_font("Helvetica", size=10)
     pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(0, 6, f"TCA: {event.tca.isoformat()}  Status: {event.status}")
+    pdf.multi_cell(0, 6, f"TCA: {event.tca.isoformat()}  Status: {event.status}  Active: {bool(event.is_active)}")
     pdf.set_x(pdf.l_margin)
     pdf.multi_cell(
         0,
@@ -180,52 +318,46 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
 
     pdf.ln(2)
     pdf.set_font("Helvetica", "B", size=12)
-    pdf.cell(0, 8, "Risk", ln=True)
+    pdf.cell(0, 8, "Screening Risk", ln=True)
     pdf.set_font("Helvetica", size=10)
-    if risk_assessment:
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        6,
+        f"Tier: {event.risk_tier.upper()}   Score: {event.risk_score:.3f}   Confidence: {event.confidence_label} ({event.confidence_score:.3f})",
+    )
+    if current_update and current_update.drivers_json:
         pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, f"PoC: {risk_assessment.poc:.6g}   Risk score: {risk_assessment.risk_score:.3f}")
-        for key, value in (risk_assessment.components_json or {}).items():
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 5, f"- {key}: {value}")
-        drivers = (risk_assessment.sensitivity_json or {}).get("top_drivers") or []
-        if drivers:
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 6, "Top drivers: " + ", ".join(drivers))
-    else:
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, "No risk assessment available.")
+        pdf.multi_cell(0, 6, "Top drivers: " + ", ".join(current_update.drivers_json))
 
-    if geometry:
+    if updates:
         pdf.ln(2)
         pdf.set_font("Helvetica", "B", size=12)
-        pdf.cell(0, 8, "Geometry (at TCA)", ln=True)
-        pdf.set_font("Helvetica", size=10)
-        r = geometry.relative_position_km
-        v = geometry.relative_velocity_km_s
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, f"Frame: {geometry.frame}")
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, f"Relative position (km): [{r[0]:.3f}, {r[1]:.3f}, {r[2]:.3f}]")
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, f"Relative velocity (km/s): [{v[0]:.3f}, {v[1]:.3f}, {v[2]:.3f}]")
-
-    pdf.ln(2)
-    pdf.set_font("Helvetica", "B", size=12)
-    pdf.cell(0, 8, "Recommended Maneuvers", ln=True)
-    pdf.set_font("Helvetica", size=10)
-    if maneuvers:
-        for option in maneuvers[:5]:
+        pdf.cell(0, 8, "Recent Evolution", ln=True)
+        pdf.set_font("Helvetica", size=9)
+        for upd in updates:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(
                 0,
-                6,
-                f"- dV={option.delta_v * 1000.0:.2f} m/s  window=[{option.time_window_start.isoformat()} .. {option.time_window_end.isoformat()}]  risk_after={option.risk_after:.3f}  fuel={option.fuel_cost:.2f} m/s eq"
-                + ("  (recommended)" if option.is_recommended else ""),
+                5,
+                f"{upd.computed_at.isoformat()} | miss={upd.miss_distance_km:.3f} km | tier={upd.risk_tier} | conf={upd.confidence_label}",
             )
-    else:
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, "No maneuvers generated.")
+
+    cdm_records = (
+        db.query(models.CdmRecord)
+        .filter(models.CdmRecord.event_id == event_id)
+        .order_by(models.CdmRecord.id.desc())
+        .limit(3)
+        .all()
+    )
+    if cdm_records:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", size=12)
+        pdf.cell(0, 8, "CDM Attachments", ln=True)
+        pdf.set_font("Helvetica", size=9)
+        for rec in cdm_records:
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(0, 5, f"CDM #{rec.id} | tca={rec.tca.isoformat()} | ingested={rec.created_at.isoformat()}")
 
     if decision:
         pdf.ln(2)
@@ -246,17 +378,6 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
         if decision.rationale_text:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(0, 6, f"Rationale: {decision.rationale_text}")
-
-    if runbook:
-        pdf.ln(2)
-        pdf.set_font("Helvetica", "B", size=12)
-        pdf.cell(0, 8, "Runbook", ln=True)
-        pdf.set_font("Helvetica", size=10)
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, runbook.template_name)
-        for idx, step in enumerate(runbook.steps_json or [], start=1):
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 5, f"{idx}. {step}")
 
     pdf_out = pdf.output(dest="S")
     pdf_bytes = pdf_out.encode("latin-1") if isinstance(pdf_out, str) else bytes(pdf_out)

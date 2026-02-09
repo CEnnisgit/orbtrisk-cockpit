@@ -31,9 +31,21 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 500
     horizons_base_url: str = "https://ssd.jpl.nasa.gov/api/horizons.api"
     solar_small_body_cache_hours: int = 6
-    default_hbr_m: float = 10.0
-    poc_alert_threshold: float = 1e-4
-    poc_num_angle_steps: int = 180
+
+    screening_horizon_days: int = 14
+    screening_volume_km: float = 10.0
+    time_critical_hours: float = 72.0
+    risk_high_score: float = 0.7
+    risk_watch_score: float = 0.4
+    risk_high_miss_km: float = 1.0
+    risk_watch_miss_km: float = 5.0
+    tle_max_age_hours_for_confidence: float = 72.0
+
+    orbit_state_retention_days: int = 30
+    tle_record_retention_days: int = 90
+
+    series_window_hours: float = 6.0
+    series_step_seconds: int = 120
 
 
 settings = Settings()

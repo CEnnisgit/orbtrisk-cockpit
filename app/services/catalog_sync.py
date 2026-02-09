@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from app import models
 from app.database import SessionLocal
 from app.settings import settings
-from app.services import propagation, conjunction, risk, maneuver, space_track_sync
+from app.services import propagation, space_track_sync
+from app.services import screening
 
 _scheduler_started = False
 
@@ -166,7 +167,7 @@ def sync_catalog(db: Session, manual: bool = False) -> dict:
     group, tle_text, satcat_text, source_name = _fetch_best_tle_text(db, manual=manual)
 
     raw_prefix = "space_track_tle" if source_name == space_track_sync.SPACE_TRACK_SOURCE else "celestrak_tle"
-    _write_raw_text_snapshot(raw_prefix, tle_text)
+    tle_raw_path = _write_raw_text_snapshot(raw_prefix, tle_text)
     _write_raw_text_snapshot("celestrak_satcat", satcat_text)
 
     satcat_meta = _parse_satcat_csv(satcat_text)
@@ -213,12 +214,7 @@ def sync_catalog(db: Session, manual: bool = False) -> dict:
         object_type = meta.get("object_type") or "PAYLOAD"
         int_des = meta.get("int_des")
 
-        space_object = (
-            db.query(models.SpaceObject)
-            .filter(models.SpaceObject.norad_cat_id == norad_id)
-            .filter(models.SpaceObject.is_operator_asset.is_(False))
-            .first()
-        )
+        space_object = db.query(models.SpaceObject).filter(models.SpaceObject.norad_cat_id == norad_id).first()
         if not space_object:
             space_object = models.SpaceObject(
                 norad_cat_id=norad_id,
@@ -245,17 +241,19 @@ def sync_catalog(db: Session, manual: bool = False) -> dict:
             raw_text=entry["raw"],
         )
         db.add(tle_record)
+        db.flush()
         _upsert_metadata(db, space_object.id, meta)
 
-        db.query(models.OrbitState).filter(models.OrbitState.space_object_id == space_object.id).delete(
-            synchronize_session=False
-        )
         orbit_state = models.OrbitState(
             satellite_id=None,
             space_object_id=space_object.id,
             epoch=epoch,
+            frame="TEME",
+            valid_from=epoch,
+            valid_to=epoch + timedelta(days=7),
             state_vector=[*position, *velocity],
             covariance=propagation.default_covariance("public"),
+            provenance_json={"tle_record_id": tle_record.id, "raw_path": tle_raw_path},
             source_id=source.id,
             confidence=0.4,
         )
@@ -263,6 +261,11 @@ def sync_catalog(db: Session, manual: bool = False) -> dict:
         ingested += 1
 
     db.commit()
+
+    try:
+        screening.cleanup_retention(db)
+    except Exception:
+        pass
 
     _generate_operator_events(db)
     return {
@@ -275,58 +278,9 @@ def sync_catalog(db: Session, manual: bool = False) -> dict:
 
 
 def _generate_operator_events(db: Session) -> None:
-    states = (
-        db.query(models.OrbitState)
-        .filter(models.OrbitState.satellite_id.isnot(None))
-        .order_by(models.OrbitState.epoch.desc())
-        .all()
-    )
-    latest_by_sat = {}
-    for state in states:
-        if state.satellite_id not in latest_by_sat:
-            latest_by_sat[state.satellite_id] = state
-
-    for state in latest_by_sat.values():
-        events = conjunction.detect_events_for_state(db, state)
-        db.flush()
-        for event in events:
-            sigma = getattr(event, "_sigma_km", propagation.extract_sigma(state.covariance))
-            poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
-            db.add(
-                models.RiskAssessment(
-                    event_id=event.id,
-                    poc=poc,
-                    risk_score=risk_score,
-                    components_json=components,
-                    sensitivity_json=sensitivity,
-                )
-            )
-            r_rel = getattr(event, "_r_rel_km", None)
-            v_rel = getattr(event, "_v_rel_km_s", None)
-            if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
-                db.merge(
-                    models.EventGeometry(
-                        event_id=event.id,
-                        frame="ECI",
-                        relative_position_km=r_rel,
-                        relative_velocity_km_s=v_rel,
-                        combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
-                    )
-                )
-            options = maneuver.generate_options(event, risk_score)
-            for option in options:
-                db.add(
-                    models.ManeuverOption(
-                        event_id=event.id,
-                        delta_v=option["delta_v"],
-                        time_window_start=option["time_window_start"],
-                        time_window_end=option["time_window_end"],
-                        risk_after=option["risk_after"],
-                        fuel_cost=option["fuel_cost"],
-                        is_recommended=option["is_recommended"],
-                    )
-                )
-    db.commit()
+    sat_ids = [row[0] for row in db.query(models.Satellite.id).all()]
+    for sat_id in sat_ids:
+        screening.screen_satellite(db, sat_id)
 
 
 def catalog_status(db: Session) -> dict:

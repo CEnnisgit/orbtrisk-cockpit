@@ -50,15 +50,17 @@
       <span>Operator</span>
       <span>Catalog</span>
       <span>Status</span>
+      <span></span>
     </div>
     {% for sat in satellites %}
-    <div class="table-row">
+    <a class="table-row" href="/satellites-ui/{{ sat.id }}">
       <span>#{{ sat.id }}</span>
       <span>{{ sat.name }}</span>
       <span>{{ sat.operator_id or '-' }}</span>
       <span>{{ sat.catalog_id or '-' }}</span>
       <span>{{ sat.status }}</span>
-    </div>
+      <span class="mono">open</span>
+    </a>
     {% else %}
     <div class="table-row empty">No satellites yet.</div>
     {% endfor %}

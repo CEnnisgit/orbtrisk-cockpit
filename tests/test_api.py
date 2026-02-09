@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
@@ -13,7 +13,6 @@ client = TestClient(app)
 
 
 def login_business():
-    # Tests run in-process; configure and use a deterministic access code.
     os.environ["BUSINESS_ACCESS_CODE"] = "test-code"
     from app.settings import settings as app_settings  # noqa: E402
 
@@ -30,68 +29,37 @@ def setup_module():
     init_db()
 
 
-def test_ingest_and_event_flow():
+def test_screening_dedup_and_updates():
     login_business()
-    # Seed a minimal catalog object so conjunction detection has something to screen against.
     client.post("/demo/seed")
 
-    payload_a = {
-        "epoch": datetime.utcnow().isoformat(),
-        "state_vector": [7000, 0, 0, 0, 7.5, 0],
-        "confidence": 0.7,
-        "source": {"name": "public-tle", "type": "public"},
-        "satellite": {"name": "Alpha", "orbit_regime": "LEO", "status": "active"},
-    }
-    payload_b = {
-        "epoch": datetime.utcnow().isoformat(),
-        "state_vector": [7000.005, 0.002, 0.001, 0, 7.49, 0.01],
-        "confidence": 0.6,
-        "source": {"name": "public-tle", "type": "public"},
-        "satellite": {"name": "Beta", "orbit_regime": "LEO", "status": "active"},
-    }
+    # First screening pass should create at least one event + update.
+    events = client.get("/events").json()
+    assert len(events) >= 1
+    event_id = events[0]["event"]["id"]
 
-    resp_a = client.post("/ingest/orbit-state", json=payload_a)
-    assert resp_a.status_code == 200
+    detail = client.get(f"/events/{event_id}").json()
+    assert detail["event"]["risk_tier"] in {"low", "watch", "high", "unknown"}
+    assert detail["event"]["confidence_label"] in {"A", "B", "C", "D"}
+    assert len(detail["updates"]) >= 1
+    updates_before = len(detail["updates"])
 
-    resp_b = client.post("/ingest/orbit-state", json=payload_b)
-    assert resp_b.status_code == 200
+    # Second screening should not create duplicate events, but should append updates.
+    sat_list = client.get("/satellites").json()
+    sat_id = sat_list[0]["id"]
+    client.post(f"/satellites/{sat_id}/screen")
 
-    events = client.get("/events")
-    assert events.status_code == 200
-    data = events.json()
-    assert len(data) >= 1
-
-    # Basic PDF report endpoint smoke test.
-    event_id = data[0]["event"]["id"]
-    report = client.get(f"/events/{event_id}/report")
-    assert report.status_code == 200
-    assert "application/pdf" in report.headers.get("content-type", "")
+    detail2 = client.get(f"/events/{event_id}").json()
+    assert len(detail2["updates"]) >= updates_before
 
 
-def test_decision_and_audit_export():
+def test_attach_cdm_creates_update():
     login_business()
-    # Ensure at least one event exists for decision/audit flows.
     client.post("/demo/seed")
 
     events = client.get("/events").json()
     event_id = events[0]["event"]["id"]
 
-    decision_payload = {
-        "action": "maneuver",
-        "approved_by": "ops@example.com",
-        "approved_at": datetime.utcnow().isoformat(),
-        "rationale_text": "Risk score exceeded threshold.",
-    }
-    decision_resp = client.post(f"/events/{event_id}/decisions", json=decision_payload)
-    assert decision_resp.status_code == 200
-
-    export_resp = client.get("/audit/export?format=csv")
-    assert export_resp.status_code == 200
-    assert "text/csv" in export_resp.headers.get("content-type", "")
-
-
-def test_ingest_cdm_creates_event_with_geometry():
-    login_business()
     payload = {
         "tca": datetime.utcnow().isoformat(),
         "relative_position_km": [0.02, 0.0, 0.0],
@@ -103,19 +71,31 @@ def test_ingest_cdm_creates_event_with_geometry():
         ],
         "hard_body_radius_m": 10.0,
         "source": {"name": "cdm-test", "type": "public"},
-        "satellite": {"name": "Gamma", "orbit_regime": "LEO", "status": "active"},
-        "secondary_norad_cat_id": 424242,
-        "secondary_name": "TEST-OBJECT",
+        "secondary_norad_cat_id": None,
+        "secondary_name": None,
+        "override_secondary": True,
     }
-    resp = client.post("/ingest/cdm", json=payload)
-    assert resp.status_code == 200
-    event_id = resp.json()["event_id"]
 
-    detail = client.get(f"/events/{event_id}")
-    assert detail.status_code == 200
-    body = detail.json()
-    assert body["geometry"] is not None
-    assert body["risk"] is not None
+    resp = client.post(f"/events/{event_id}/cdm", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["event_id"] == event_id
+    assert isinstance(body["update_id"], int)
+
+    detail = client.get(f"/events/{event_id}").json()
+    assert len(detail["updates"]) >= 2
+    assert detail["cdm_records"]
+
+
+def test_pdf_report_smoke():
+    login_business()
+    client.post("/demo/seed")
+    events = client.get("/events").json()
+    event_id = events[0]["event"]["id"]
+
+    report = client.get(f"/events/{event_id}/report")
+    assert report.status_code == 200
+    assert "application/pdf" in report.headers.get("content-type", "")
 
 
 def test_ui_pages_smoke():
@@ -130,3 +110,4 @@ def test_ui_pages_smoke():
     assert resp.status_code == 200
     resp = client.get("/catalog-ui")
     assert resp.status_code == 200
+

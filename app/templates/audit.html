@@ -46,17 +46,13 @@
         <p>Driver: {{ ctx.decision.decision_driver or '-' }} | Assumptions: {{ ctx.decision.assumption_notes or '-' }}</p>
         <p>Override: {{ ctx.decision.override_reason or '-' }}</p>
         {% if ctx.event %}
-          <p>Event #{{ ctx.event.id }} | TCA {{ ctx.event.tca }} | Miss {{ "%.3f"|format(ctx.event.miss_distance) }} km</p>
-        {% endif %}
-        {% if ctx.risk %}
-          <p>Risk score: {{ "%.2f"|format(ctx.risk.risk_score) }}</p>
-        {% endif %}
-        {% if ctx.maneuvers %}
-          <ul class="risk-list">
-            {% for m in ctx.maneuvers[:3] %}
-              <li>ΔV {{ "%.2f"|format(m.delta_v * 1000) }} m/s | Risk after {{ "%.2f"|format(m.risk_after) }}</li>
-            {% endfor %}
-          </ul>
+          <p>
+            Event #{{ ctx.event.id }}
+            | TCA {{ ctx.event.tca }}
+            | Miss {{ "%.3f"|format(ctx.event.miss_distance) }} km
+            | Tier {{ ctx.event.risk_tier }}
+            | Conf {{ ctx.event.confidence_label }}
+          </p>
         {% endif %}
       </div>
       {% endif %}

@@ -53,25 +53,24 @@
   <div class="panel-header">
     <div>
       <h2>Add Tracking Message (CDM-lite)</h2>
-      <span class="panel-sub">Paste relative state + covariance at closest approach to compute PoC.</span>
+      <span class="panel-sub">Attach relative state + covariance at closest approach.</span>
     </div>
   </div>
   <div class="notice">
-    This is a simplified CDM input. If you have a full CCSDS CDM, we can add proper parsing next.
+    This is a simplified CDM input that attaches to an existing conjunction event.
   </div>
 
   <form id="cdmForm" class="form" onsubmit="return false;">
     <div class="form-row">
-      <label>Satellite</label>
-      {% if satellites|length %}
-        <select id="cdmSatelliteId" required>
-          {% for sat in satellites %}
-          <option value="{{ sat.id }}">#{{ sat.id }} — {{ sat.name }}</option>
-          {% endfor %}
-        </select>
-      {% else %}
-        <div class="empty-state">Add a satellite first: <a href="/satellites-ui">Satellites</a></div>
-      {% endif %}
+      <label>Event</label>
+      <input id="cdmEventId" type="number" placeholder="Event ID" required />
+    </div>
+    <div class="form-row">
+      <label>Override Secondary Match</label>
+      <select id="cdmOverrideSecondary">
+        <option value="false" selected>false</option>
+        <option value="true">true</option>
+      </select>
     </div>
     <div class="form-row">
       <label>TCA (UTC ISO)</label>
@@ -112,7 +111,8 @@
     </div>
     <div class="form-row">
       <label>Hard-body Radius (m)</label>
-      <input id="cdmHbr" type="number" step="0.1" value="10" />
+      <input id="cdmHbr" type="number" step="0.1" value="10" disabled />
+      <span class="panel-sub">Not used for screening-level risk (reserved for future).</span>
     </div>
     <div class="form-row">
       <label>Source Name</label>
@@ -185,13 +185,14 @@
       combined_pos_covariance_km2: cov,
       hard_body_radius_m: num('cdmHbr') || 10.0,
       source: { name: str('cdmSourceName') || 'cdm', type: str('cdmSourceType') || 'public' },
-      satellite_id: Number(str('cdmSatelliteId')),
       secondary_norad_cat_id: norad,
       secondary_name: str('cdmSecondaryName') || null,
+      override_secondary: str('cdmOverrideSecondary') === 'true',
     };
   }
 
   cdmExampleBtn?.addEventListener('click', () => {
+    document.getElementById('cdmEventId').value = 1;
     document.getElementById('cdmTca').value = new Date().toISOString();
     document.getElementById('cdmNorad').value = 25544;
     document.getElementById('cdmSecondaryName').value = 'ISS (ZARYA)';
@@ -213,7 +214,8 @@
       setCdmStatus('Submitting…', 'info');
       cdmSubmitBtn.disabled = true;
       const payload = buildCdmPayload();
-      const resp = await fetch('/ingest/cdm', {
+      const eventId = Number(str('cdmEventId'));
+      const resp = await fetch(`/events/${eventId}/cdm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -223,7 +225,7 @@
         throw new Error(text || 'Request failed');
       }
       const data = await resp.json();
-      setCdmStatus(`Saved as event #${data.event_id}. Redirecting…`, 'ok');
+      setCdmStatus(`Attached. Update #${data.update_id}. Redirecting…`, 'ok');
       window.location.href = `/events-ui/${data.event_id}`;
     } catch (err) {
       setCdmStatus(`Failed: ${err.message || err}`, 'error');

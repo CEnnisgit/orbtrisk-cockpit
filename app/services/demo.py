@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
 
 from app import models
-from app.services import conjunction, risk, maneuver, propagation
+from app.services import propagation, screening
 
 
 def _get_or_create_source(db: Session) -> models.Source:
@@ -26,7 +26,8 @@ def _get_or_create_satellite(db: Session, name: str) -> models.Satellite:
     satellite = db.query(models.Satellite).filter(models.Satellite.name == name).first()
     if satellite:
         return satellite
-    satellite = models.Satellite(name=name, orbit_regime="LEO", status="active")
+    space_object = _get_or_create_space_object(db, name, None, True)
+    satellite = models.Satellite(name=name, orbit_regime="LEO", status="active", space_object_id=space_object.id)
     db.add(satellite)
     db.flush()
     return satellite
@@ -59,7 +60,7 @@ def seed_demo(db: Session) -> Dict[str, int]:
     sat_a = _get_or_create_satellite(db, "Alpha")
     _get_or_create_satellite(db, "Beta")
 
-    operator_object = _get_or_create_space_object(db, "Alpha", None, True)
+    operator_object = db.get(models.SpaceObject, sat_a.space_object_id)
     catalog_object = _get_or_create_space_object(db, "Catalog-Delta", 12345, False)
 
     epoch = datetime.utcnow()
@@ -69,8 +70,12 @@ def seed_demo(db: Session) -> Dict[str, int]:
         satellite_id=sat_a.id,
         space_object_id=operator_object.id,
         epoch=epoch,
+        frame="ECI",
+        valid_from=epoch,
+        valid_to=None,
         state_vector=[7000, 0, 0, 0, 7.5, 0],
         covariance=cov,
+        provenance_json={"demo": True},
         source_id=source.id,
         confidence=0.7,
     )
@@ -78,8 +83,12 @@ def seed_demo(db: Session) -> Dict[str, int]:
         satellite_id=None,
         space_object_id=catalog_object.id,
         epoch=epoch,
+        frame="TEME",
+        valid_from=epoch,
+        valid_to=epoch + timedelta(days=7),
         state_vector=[7000.005, 0.002, 0.001, 0, 7.49, 0.01],
         covariance=cov,
+        provenance_json={"demo": True},
         source_id=source.id,
         confidence=0.6,
     )
@@ -89,51 +98,13 @@ def seed_demo(db: Session) -> Dict[str, int]:
     db.add(state_b)
     db.flush()
 
-    events = []
-    events.extend(conjunction.detect_events_for_state(db, state_a))
-    db.flush()
+    db.commit()
 
-    for event in events:
-        sigma = getattr(event, "_sigma_km", propagation.extract_sigma(cov))
-        poc, risk_score, components, sensitivity = risk.assess_event(event, sigma)
-        db.add(
-            models.RiskAssessment(
-                event_id=event.id,
-                poc=poc,
-                risk_score=risk_score,
-                components_json=components,
-                sensitivity_json=sensitivity,
-            )
-        )
-        r_rel = getattr(event, "_r_rel_km", None)
-        v_rel = getattr(event, "_v_rel_km_s", None)
-        if isinstance(r_rel, list) and isinstance(v_rel, list) and len(r_rel) == 3 and len(v_rel) == 3:
-            db.merge(
-                models.EventGeometry(
-                    event_id=event.id,
-                    frame="ECI",
-                    relative_position_km=r_rel,
-                    relative_velocity_km_s=v_rel,
-                    combined_pos_covariance_km2=getattr(event, "_combined_pos_covariance_km2", None),
-                )
-            )
-        options = maneuver.generate_options(event, risk_score)
-        for option in options:
-            db.add(
-                models.ManeuverOption(
-                    event_id=event.id,
-                    delta_v=option["delta_v"],
-                    time_window_start=option["time_window_start"],
-                    time_window_end=option["time_window_end"],
-                    risk_after=option["risk_after"],
-                    fuel_cost=option["fuel_cost"],
-                    is_recommended=option["is_recommended"],
-                )
-            )
+    result = screening.screen_satellite(db, sat_a.id)
 
     return {
         "satellites": 2,
-        "events": len(events),
+        "events": result.updates_created,
     }
 
 
@@ -149,8 +120,8 @@ def seed_runbooks(db: Session) -> None:
             [
                 "Notify mission lead and open incident bridge",
                 "Verify latest ephemerides from operator",
-                "Review maneuver options and delta-V budget",
-                "Select maneuver and log decision rationale",
+                "Review latest screening updates and confidence",
+                "Coordinate with affected operators",
             ],
         ),
         (
@@ -158,7 +129,7 @@ def seed_runbooks(db: Session) -> None:
             "Medium-Risk Review Workflow",
             [
                 "Validate conjunction geometry",
-                "Check upcoming maneuvers and constraints",
+                "Check upcoming maneuvers and constraints (external)",
                 "Monitor for updated tracking data",
                 "Escalate if risk increases",
             ],

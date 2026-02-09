@@ -42,6 +42,7 @@ class SatelliteCreate(BaseModel):
 
 class SatelliteOut(SatelliteCreate):
     id: int
+    space_object_id: Optional[int] = None
     created_at: datetime
 
     class Config:
@@ -63,8 +64,12 @@ class OrbitStateOut(BaseModel):
     satellite_id: Optional[int] = None
     space_object_id: Optional[int] = None
     epoch: datetime
+    frame: str
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
     state_vector: List[float]
     covariance: Optional[List[List[float]]]
+    provenance_json: Optional[dict] = None
     source_id: int
     confidence: float
     created_at: datetime
@@ -73,23 +78,21 @@ class OrbitStateOut(BaseModel):
         from_attributes = True
 
 
-class CdmIngestRequest(BaseModel):
+class CdmAttachRequest(BaseModel):
     tca: datetime
     relative_position_km: List[float] = Field(..., min_length=3, max_length=3)
     relative_velocity_km_s: List[float] = Field(..., min_length=3, max_length=3)
     combined_pos_covariance_km2: List[List[float]] = Field(..., min_length=3, max_length=3)
     hard_body_radius_m: Optional[float] = None
     source: SourceCreate
-    satellite_id: Optional[int] = None
-    satellite: Optional[SatelliteCreate] = None
     secondary_norad_cat_id: Optional[int] = None
     secondary_name: Optional[str] = None
+    override_secondary: bool = False
 
 
-class CdmIngestOut(BaseModel):
+class CdmAttachOut(BaseModel):
     event_id: int
-    risk_score: float
-    poc: float
+    update_id: int
 
 
 class ConjunctionEventOut(BaseModel):
@@ -101,6 +104,13 @@ class ConjunctionEventOut(BaseModel):
     miss_distance: float
     relative_velocity: float
     screening_volume: float
+    risk_tier: str
+    risk_score: float
+    confidence_score: float
+    confidence_label: str
+    current_update_id: Optional[int] = None
+    last_seen_at: Optional[datetime] = None
+    is_active: bool
     status: str
     created_at: datetime
 
@@ -108,28 +118,38 @@ class ConjunctionEventOut(BaseModel):
         from_attributes = True
 
 
-class RiskAssessmentOut(BaseModel):
+class ConjunctionEventUpdateOut(BaseModel):
     id: int
     event_id: int
-    poc: float
+    computed_at: datetime
+
+    tca: datetime
+    miss_distance_km: float
+    relative_velocity_km_s: float
+    screening_volume_km: float
+
+    r_rel_eci_km: Optional[list[float]] = None
+    v_rel_eci_km_s: Optional[list[float]] = None
+    r_rel_rtn_km: Optional[list[float]] = None
+    v_rel_rtn_km_s: Optional[list[float]] = None
+
+    risk_tier: str
     risk_score: float
-    components_json: dict
-    sensitivity_json: dict
-    created_at: datetime
+    confidence_score: float
+    confidence_label: str
+
+    drivers_json: Optional[list[str]] = None
+    details_json: Optional[dict] = None
 
     class Config:
         from_attributes = True
 
 
-class ManeuverOptionOut(BaseModel):
+class CdmRecordOut(BaseModel):
     id: int
     event_id: int
-    delta_v: float
-    time_window_start: datetime
-    time_window_end: datetime
-    risk_after: float
-    fuel_cost: float
-    is_recommended: bool
+    source_id: Optional[int] = None
+    tca: datetime
     created_at: datetime
 
     class Config:
@@ -158,31 +178,17 @@ class DecisionOut(DecisionCreate):
         from_attributes = True
 
 
-class EventGeometryOut(BaseModel):
-    event_id: int
-    frame: str
-    relative_position_km: list[float]
-    relative_velocity_km_s: list[float]
-    combined_pos_covariance_km2: Optional[list[list[float]]] = None
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-
-
 class EventListItem(BaseModel):
     event: ConjunctionEventOut
-    risk_score: Optional[float] = None
+    time_to_tca_hours: Optional[float] = None
 
 
 class EventDetailOut(BaseModel):
     event: ConjunctionEventOut
-    risk: Optional[RiskAssessmentOut]
-    maneuvers: List[ManeuverOptionOut]
+    current_update: Optional[ConjunctionEventUpdateOut] = None
+    updates: List[ConjunctionEventUpdateOut] = []
     decision: Optional[DecisionOut]
-    geometry: Optional[EventGeometryOut] = None
+    cdm_records: List[CdmRecordOut] = []
 
 
 
