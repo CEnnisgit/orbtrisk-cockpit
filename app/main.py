@@ -8,17 +8,25 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.routes import ingestion, satellites, events, decisions, audit, webhooks, catalog, ai, solar
 from app.database import get_db, init_db
 from app import models
+from app import auth
 from app.services import demo, conjunction, risk, maneuver, propagation, catalog_sync
 from app.settings import settings
 
 app = FastAPI(title="Space Risk & Collision Avoidance MVP")
 app.add_middleware(GZipMiddleware, minimum_size=500)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    same_site="lax",
+    https_only=False,
+)
 
 app.include_router(ingestion.router, tags=["ingestion"])
 app.include_router(satellites.router, tags=["satellites"])
@@ -33,6 +41,63 @@ app.include_router(solar.router, tags=["solar"])
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 templates = Jinja2Templates(directory="app/templates")
+
+
+@app.middleware("http")
+async def add_template_globals(request: Request, call_next):
+    # Make auth state available in every template.
+    request.state.is_business = auth.is_business(request)
+    return await call_next(request)
+
+
+@app.get("/auth/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/dashboard"):
+    configured = auth.business_access_configured(settings.business_access_code)
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "next": next, "configured": configured, "error": None},
+    )
+
+
+@app.post("/auth/login")
+def login_submit(
+    request: Request,
+    access_code: str = Form(None),
+    next: str = Form("/dashboard"),
+):
+    configured = auth.business_access_configured(settings.business_access_code)
+    if not configured:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": next,
+                "configured": configured,
+                "error": "Business login is not configured on this server.",
+            },
+            status_code=400,
+        )
+
+    if not access_code or access_code.strip() != (settings.business_access_code or "").strip():
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": next,
+                "configured": configured,
+                "error": "Invalid access code.",
+            },
+            status_code=401,
+        )
+
+    request.session["role"] = "business"
+    return RedirectResponse(url=next or "/dashboard", status_code=303)
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.on_event("startup")
@@ -82,6 +147,15 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "recent_events": recent_events,
         },
     )
+
+
+def _require_business_ui(request: Request) -> None:
+    if not auth.is_business(request):
+        # Raise an HTTPException so FastAPI turns it into a redirect.
+        raise HTTPException(
+            status_code=303,
+            headers={"Location": f"/auth/login?next={request.url.path}"},
+        )
 
 
 @app.post("/catalog/sync-ui")
@@ -341,6 +415,7 @@ async def seed_demo_data(db: Session = Depends(get_db)):
 
 @app.get("/satellites-ui", response_class=HTMLResponse)
 def satellites_ui(request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
     satellites = db.query(models.Satellite).order_by(models.Satellite.id.asc()).all()
     return templates.TemplateResponse(
         "satellites.html",
@@ -358,6 +433,7 @@ def satellites_create_ui(
     orbit_regime: str = Form("LEO"),
     status: str = Form("active"),
 ):
+    _require_business_ui(request)
     if not name:
         return RedirectResponse(url="/satellites-ui", status_code=303)
     satellite = models.Satellite(
@@ -380,6 +456,7 @@ def catalog_ui(
     show: str = "catalog",
     page: int = 1,
 ):
+    _require_business_ui(request)
     per_page = 50
     page = max(1, int(page))
     offset = (page - 1) * per_page
@@ -448,6 +525,7 @@ def catalog_ui(
 
 @app.get("/catalog-ui/{object_id}", response_class=HTMLResponse)
 def catalog_detail_ui(object_id: int, request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
     detail = catalog_sync.catalog_object_detail(db, object_id)
     if not detail:
         return templates.TemplateResponse(
@@ -462,6 +540,7 @@ def catalog_detail_ui(object_id: int, request: Request, db: Session = Depends(ge
 
 @app.get("/ingest-ui", response_class=HTMLResponse)
 def ingest_ui(request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
     satellites = db.query(models.Satellite).order_by(models.Satellite.id.asc()).all()
     return templates.TemplateResponse(
         "ingest.html",
@@ -480,6 +559,7 @@ def ingest_ui_post(
     source_name: str = Form("public-tle"),
     source_type: str = Form("public"),
 ):
+    _require_business_ui(request)
     if not satellite_id or not epoch or not state_vector:
         return RedirectResponse(url="/ingest-ui", status_code=303)
 
@@ -650,6 +730,7 @@ def audit_ui(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
+    _require_business_ui(request)
     query = db.query(models.AuditLog)
     if start_date:
         try:

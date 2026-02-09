@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     space_track_sync_hours: int = 1
     cesium_ion_token: Optional[str] = None
     cesium_night_asset_id: Optional[int] = None
+    session_secret: str = "dev-session-secret-change-me"
+    business_access_code: Optional[str] = None
     llm_enabled: bool = True
     llm_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.1:8b"

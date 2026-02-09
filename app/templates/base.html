@@ -24,11 +24,18 @@
         <a class="{% if request.url.path == '/' %}active{% endif %}" href="/">Map</a>
         <a class="{% if request.url.path.startswith('/dashboard') %}active{% endif %}" href="/dashboard">Home</a>
         <a class="{% if request.url.path.startswith('/events-ui') %}active{% endif %}" href="/events-ui">Alerts</a>
-        <a class="{% if request.url.path.startswith('/catalog-ui') %}active{% endif %}" href="/catalog-ui">Catalog</a>
-        <a class="{% if request.url.path.startswith('/satellites-ui') %}active{% endif %}" href="/satellites-ui">Satellites</a>
-        <a class="{% if request.url.path.startswith('/ingest-ui') %}active{% endif %}" href="/ingest-ui">Add Data</a>
-        <a class="{% if request.url.path.startswith('/audit-ui') %}active{% endif %}" href="/audit-ui">History</a>
-        <a href="/docs">API</a>
+        {% if request.state.is_business %}
+          <a class="{% if request.url.path.startswith('/catalog-ui') %}active{% endif %}" href="/catalog-ui">Catalog</a>
+          <a class="{% if request.url.path.startswith('/satellites-ui') %}active{% endif %}" href="/satellites-ui">Satellites</a>
+          <a class="{% if request.url.path.startswith('/ingest-ui') %}active{% endif %}" href="/ingest-ui">Add Data</a>
+          <a class="{% if request.url.path.startswith('/audit-ui') %}active{% endif %}" href="/audit-ui">History</a>
+          <a href="/docs">API</a>
+          <form method="post" action="/auth/logout" class="nav-inline">
+            <button class="nav-btn" type="submit">Logout</button>
+          </form>
+        {% else %}
+          <a class="{% if request.url.path.startswith('/auth/login') %}active{% endif %}" href="/auth/login">Business</a>
+        {% endif %}
       </nav>
     </header>
 

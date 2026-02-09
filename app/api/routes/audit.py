@@ -1,11 +1,12 @@
 import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fpdf import FPDF
 from sqlalchemy.orm import Session
 
+from app import auth
 from app import models
 from app.database import get_db
 
@@ -13,7 +14,8 @@ router = APIRouter()
 
 
 @router.get("/audit/export")
-def export_audit(format: str = "csv", db: Session = Depends(get_db)):
+def export_audit(request: Request, format: str = "csv", db: Session = Depends(get_db)):
+    auth.require_business(request)
     entries = db.query(models.AuditLog).order_by(models.AuditLog.id.asc()).all()
 
     if format == "csv":

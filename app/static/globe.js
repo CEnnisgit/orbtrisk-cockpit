@@ -217,20 +217,21 @@ function buildImageryProvider(useIon) {
     }
   }
 
-  // Detailed, properly georeferenced map tiles (Web Mercator), good for validating ground locations.
+  // Offline-ish fallback: a global equirectangular image (Blue Marble style).
+  // We prefer this over OSM tiles by default because many networks block tile servers,
+  // which makes the globe look "blank" for users.
+  if (Cesium.SingleTileImageryProvider) {
+    return new Cesium.SingleTileImageryProvider({
+      url: "/static/textures/earth/land_ocean_ice_2048.jpg",
+    });
+  }
+
+  // Optional: if SingleTileImageryProvider is missing, try OSM tiles.
   if (Cesium.UrlTemplateImageryProvider) {
     return new Cesium.UrlTemplateImageryProvider({
       url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
       maximumLevel: 19,
       credit: "\u00a9 OpenStreetMap contributors",
-    });
-  }
-
-  // Offline-ish fallback: a global equirectangular image (Blue Marble style).
-  // Still correctly mapped to the WGS84 ellipsoid, just not zoomable like tiles.
-  if (Cesium.SingleTileImageryProvider) {
-    return new Cesium.SingleTileImageryProvider({
-      url: "/static/textures/earth/land_ocean_ice_2048.jpg",
     });
   }
 
@@ -261,6 +262,34 @@ function buildViewer() {
     infoBox: false,
     selectionIndicator: false,
   });
+  // If the base layer fails (blocked tiles, network issues), Cesium may keep the globe untextured.
+  // Keep a deterministic offline texture as a fallback.
+  try {
+    if (viewer && viewer.scene && viewer.scene.globe) {
+      viewer.scene.globe.tileLoadProgressEvent.addEventListener((remaining) => {
+        if (remaining !== 0) return;
+        const layers = viewer.imageryLayers;
+        if (!layers || layers.length === 0) return;
+        const layer0 = layers.get(0);
+        if (!layer0 || layer0.__offlineFallbackApplied) return;
+        // If the provider threw errors, Cesium will still finish "loading" with no imagery.
+        const providerReady = layer0.imageryProvider && layer0.imageryProvider.ready;
+        if (providerReady) return;
+        if (Cesium && Cesium.SingleTileImageryProvider) {
+          layers.removeAll(false);
+          layers.addImageryProvider(
+            new Cesium.SingleTileImageryProvider({
+              url: "/static/textures/earth/land_ocean_ice_2048.jpg",
+            })
+          );
+          setStatus("Basemap tiles blocked; using offline Earth texture.");
+        }
+        layer0.__offlineFallbackApplied = true;
+      });
+    }
+  } catch (err) {
+    // Ignore imagery fallback failures.
+  }
   viewer.clock.shouldAnimate = false;
   viewer.clock.multiplier = 0;
   viewer.scene.globe.enableLighting = true;

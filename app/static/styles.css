@@ -82,6 +82,29 @@ body {
   justify-content: flex-end;
 }
 
+.nav-inline {
+  display: inline;
+}
+
+.nav-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.nav-btn:hover {
+  color: var(--text);
+  border-color: var(--panel-border);
+  background: rgba(11, 16, 32, 0.03);
+}
+
 .nav a {
   color: var(--muted);
   text-decoration: none;
@@ -1215,6 +1238,28 @@ details.table-row summary {
 .viewer-nav-links {
   display: flex;
   gap: 4px;
+}
+
+.viewer-nav-inline {
+  display: inline;
+}
+
+.viewer-nav-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.viewer-nav-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .viewer-nav-links a {

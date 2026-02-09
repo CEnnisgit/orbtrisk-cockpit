@@ -12,11 +12,26 @@ from app.database import init_db  # noqa: E402
 client = TestClient(app)
 
 
+def login_business():
+    # Tests run in-process; configure and use a deterministic access code.
+    os.environ["BUSINESS_ACCESS_CODE"] = "test-code"
+    from app.settings import settings as app_settings  # noqa: E402
+
+    app_settings.business_access_code = "test-code"
+    resp = client.post(
+        "/auth/login",
+        data={"access_code": "test-code", "next": "/dashboard"},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (303, 307)
+
+
 def setup_module():
     init_db()
 
 
 def test_ingest_and_event_flow():
+    login_business()
     # Seed a minimal catalog object so conjunction detection has something to screen against.
     client.post("/demo/seed")
 
@@ -54,6 +69,7 @@ def test_ingest_and_event_flow():
 
 
 def test_decision_and_audit_export():
+    login_business()
     # Ensure at least one event exists for decision/audit flows.
     client.post("/demo/seed")
 
@@ -75,6 +91,7 @@ def test_decision_and_audit_export():
 
 
 def test_ingest_cdm_creates_event_with_geometry():
+    login_business()
     payload = {
         "tca": datetime.utcnow().isoformat(),
         "relative_position_km": [0.02, 0.0, 0.0],
@@ -102,6 +119,7 @@ def test_ingest_cdm_creates_event_with_geometry():
 
 
 def test_ui_pages_smoke():
+    login_business()
     resp = client.get("/dashboard")
     assert resp.status_code == 200
     resp = client.get("/events-ui")

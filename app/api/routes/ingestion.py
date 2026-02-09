@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app import auth
 from app import models, schemas
 from app.database import get_db
 from app.services import ingestion, conjunction, risk, maneuver, propagation, webhooks
@@ -13,10 +14,12 @@ router = APIRouter()
 
 @router.post("/ingest/orbit-state", response_model=schemas.OrbitStateOut)
 async def ingest_orbit_state(
+    request: Request,
     payload: schemas.OrbitStateCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    auth.require_business(request)
     if payload.satellite_id is None and payload.satellite is None:
         raise HTTPException(status_code=400, detail="Provide satellite_id or satellite")
 
@@ -150,10 +153,12 @@ async def ingest_orbit_state(
 
 @router.post("/ingest/cdm", response_model=schemas.CdmIngestOut)
 async def ingest_cdm(
+    request: Request,
     payload: schemas.CdmIngestRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    auth.require_business(request)
     if payload.satellite_id is None and payload.satellite is None:
         raise HTTPException(status_code=400, detail="Provide satellite_id or satellite")
 

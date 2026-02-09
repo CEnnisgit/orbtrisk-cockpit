@@ -28,10 +28,17 @@
         <a href="/" class="active">Map</a>
         <a href="/dashboard">Home</a>
         <a href="/events-ui">Alerts</a>
-        <a href="/catalog-ui">Catalog</a>
-        <a href="/satellites-ui">Satellites</a>
-        <a href="/ingest-ui">Add Data</a>
-        <a href="/docs">API</a>
+        {% if request.state.is_business %}
+          <a href="/catalog-ui">Catalog</a>
+          <a href="/satellites-ui">Satellites</a>
+          <a href="/ingest-ui">Add Data</a>
+          <a href="/docs">API</a>
+          <form method="post" action="/auth/logout" class="viewer-nav-inline">
+            <button class="viewer-nav-btn" type="submit">Logout</button>
+          </form>
+        {% else %}
+          <a href="/auth/login">Business</a>
+        {% endif %}
       </div>
     </nav>
 

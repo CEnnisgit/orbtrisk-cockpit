@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <h2>Business Sign In</h2>
+    <span class="panel-sub">Unlock operator tools (catalog, satellites, ingest, audit).</span>
+  </div>
+
+  {% if not configured %}
+    <div class="notice">
+      Business login is not enabled on this server. Set <code>BUSINESS_ACCESS_CODE</code> in <code>.env</code>.
+    </div>
+  {% endif %}
+
+  {% if error %}
+    <div class="notice">{{ error }}</div>
+  {% endif %}
+
+  <form class="form" method="post" action="/auth/login">
+    <input type="hidden" name="next" value="{{ next }}" />
+    <div class="form-row">
+      <label>Access Code</label>
+      <input type="password" name="access_code" autocomplete="current-password" required />
+    </div>
+    <button class="primary" type="submit" {% if not configured %}disabled{% endif %}>Sign In</button>
+  </form>
+
+  <div class="panel-subsection">
+    <div class="panel-sub">Not a business user? You can still use Map, Home, and Alerts.</div>
+  </div>
+</section>
+{% endblock %}
+
