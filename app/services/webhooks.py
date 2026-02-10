@@ -15,6 +15,29 @@ def _json_body(payload: Dict) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
+async def post_webhook(
+    *,
+    url: str,
+    event_type: str,
+    subscription_id: int,
+    secret: Optional[str],
+    payload: Dict,
+    timeout_seconds: float,
+) -> None:
+    headers = {
+        "Content-Type": "application/json",
+        "X-Event-Type": str(event_type),
+        "X-Webhook-Id": str(subscription_id),
+    }
+    signature = sign_payload(secret, payload)
+    if signature:
+        headers["X-Signature"] = signature
+
+    body = _json_body(payload)
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        await client.post(url, content=body, headers=headers)
+
+
 def sign_payload(secret: Optional[str], payload: Dict) -> Optional[str]:
     if not secret:
         return None
@@ -35,16 +58,17 @@ async def dispatch_event(event_type: str, payload: Dict) -> None:
             return
 
         timeout = settings.webhook_timeout_seconds
-        body = _json_body(payload)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for sub in subscriptions:
-                headers = {"Content-Type": "application/json"}
-                signature = sign_payload(sub.secret, payload)
-                if signature:
-                    headers["X-Signature"] = signature
-                try:
-                    await client.post(sub.url, content=body, headers=headers)
-                except httpx.HTTPError:
-                    continue
+        for sub in subscriptions:
+            try:
+                await post_webhook(
+                    url=str(sub.url),
+                    event_type=str(event_type),
+                    subscription_id=int(sub.id),
+                    secret=str(sub.secret) if sub.secret else None,
+                    payload=payload,
+                    timeout_seconds=float(timeout),
+                )
+            except httpx.HTTPError:
+                continue
     finally:
         db.close()

@@ -29,6 +29,7 @@
           <a class="{% if request.url.path.startswith('/satellites-ui') %}active{% endif %}" href="/satellites-ui">Satellites</a>
           <a class="{% if request.url.path.startswith('/ingest-ui') %}active{% endif %}" href="/ingest-ui">Add Data</a>
           <a class="{% if request.url.path.startswith('/audit-ui') %}active{% endif %}" href="/audit-ui">History</a>
+          <a class="{% if request.url.path.startswith('/webhooks-ui') %}active{% endif %}" href="/webhooks-ui">Webhooks</a>
           <a href="/docs">API</a>
           <form method="post" action="/auth/logout" class="nav-inline">
             <button class="nav-btn" type="submit">Logout</button>

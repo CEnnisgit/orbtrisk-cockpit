@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <h2>Webhooks</h2>
+    <span class="panel-sub">Send key event changes to your ops tools.</span>
+  </div>
+
+  <div class="notice">
+    Requests are signed with <span class="mono">X-Signature</span> (HMAC SHA256 of the JSON body).
+    The server also sets <span class="mono">X-Event-Type</span> and <span class="mono">X-Webhook-Id</span>.
+  </div>
+
+  <form class="form" method="post" action="/webhooks-ui">
+    <div class="form-row">
+      <label>URL</label>
+      <input type="url" name="url" placeholder="https://example.com/webhook" required />
+    </div>
+    <div class="form-row">
+      <label>Event Type</label>
+      <select name="event_type">
+        <option value="conjunction.changed">conjunction.changed</option>
+        <option value="conjunction.created">conjunction.created</option>
+        <option value="screening.completed">screening.completed</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Secret (optional)</label>
+      <input type="text" name="secret" placeholder="shared-secret-for-signature" />
+    </div>
+    <button class="primary" type="submit">Add Webhook</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <h2>Subscriptions</h2>
+    <span class="panel-sub">{{ webhooks|length }} total</span>
+  </div>
+
+  <div class="table">
+    <div class="table-row header">
+      <span>ID</span>
+      <span>Active</span>
+      <span>Event</span>
+      <span>URL</span>
+      <span></span>
+    </div>
+    {% for hook in webhooks %}
+      <div class="table-row">
+        <span>#{{ hook.id }}</span>
+        <span class="pill {{ 'open' if hook.active else 'closed' }}">{{ 'active' if hook.active else 'paused' }}</span>
+        <span class="mono">{{ hook.event_type }}</span>
+        <span class="mono">{{ hook.url }}</span>
+        <span>
+          <form method="post" action="/webhooks-ui/{{ hook.id }}/toggle" class="nav-inline">
+            <button class="secondary" type="submit">{{ 'Pause' if hook.active else 'Resume' }}</button>
+          </form>
+          <form method="post" action="/webhooks-ui/{{ hook.id }}/test" class="nav-inline">
+            <button class="secondary" type="submit">Send Test</button>
+          </form>
+        </span>
+      </div>
+    {% else %}
+      <div class="table-row empty">No webhooks yet.</div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
+

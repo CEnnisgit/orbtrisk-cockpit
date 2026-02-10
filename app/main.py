@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Request, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -29,6 +29,7 @@ from app.database import get_db, init_db
 from app import models
 from app import auth
 from app.services import demo, propagation, catalog_sync
+from app.services import webhooks as webhook_service
 from app.settings import settings
 
 app = FastAPI(title="Space Risk & Collision Avoidance MVP")
@@ -72,6 +73,7 @@ async def add_template_globals(request: Request, call_next):
             "/ingest-ui",
             "/catalog-ui",
             "/audit-ui",
+            "/webhooks-ui",
         )
         docs_paths = {"/docs", "/redoc", "/openapi.json"}
 
@@ -830,6 +832,77 @@ def ingest_ui_post(
 
     screening.screen_satellite(db, satellite.id)
     return RedirectResponse(url=f"/satellites-ui/{satellite.id}", status_code=303)
+
+
+@app.get("/webhooks-ui", response_class=HTMLResponse)
+def webhooks_ui(request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
+    hooks = db.query(models.WebhookSubscription).order_by(models.WebhookSubscription.id.asc()).all()
+    return templates.TemplateResponse(
+        "webhooks.html",
+        {"request": request, "webhooks": hooks},
+    )
+
+
+@app.post("/webhooks-ui")
+def webhooks_ui_post(
+    request: Request,
+    db: Session = Depends(get_db),
+    url: str = Form(None),
+    event_type: str = Form("conjunction.changed"),
+    secret: str = Form(None),
+):
+    _require_business_ui(request)
+    if not url or not event_type:
+        return RedirectResponse(url="/webhooks-ui", status_code=303)
+    hook = models.WebhookSubscription(
+        url=str(url).strip(),
+        event_type=str(event_type).strip(),
+        secret=str(secret).strip() if secret and str(secret).strip() else None,
+        active=True,
+    )
+    db.add(hook)
+    db.commit()
+    return RedirectResponse(url="/webhooks-ui", status_code=303)
+
+
+@app.post("/webhooks-ui/{webhook_id}/toggle")
+def webhooks_toggle_ui(webhook_id: int, request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
+    hook = db.get(models.WebhookSubscription, int(webhook_id))
+    if hook:
+        hook.active = not bool(hook.active)
+        db.commit()
+    return RedirectResponse(url="/webhooks-ui", status_code=303)
+
+
+@app.post("/webhooks-ui/{webhook_id}/test")
+def webhooks_test_ui(
+    webhook_id: int,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    _require_business_ui(request)
+    hook = db.get(models.WebhookSubscription, int(webhook_id))
+    if hook:
+        payload = {
+            "test": True,
+            "sent_at": datetime.utcnow().isoformat(),
+            "subscription_id": int(hook.id),
+            "event_type": str(hook.event_type),
+            "note": "OrbitRisk webhook test ping",
+        }
+        background_tasks.add_task(
+            webhook_service.post_webhook,
+            url=str(hook.url),
+            event_type=str(hook.event_type),
+            subscription_id=int(hook.id),
+            secret=str(hook.secret) if hook.secret else None,
+            payload=payload,
+            timeout_seconds=float(settings.webhook_timeout_seconds),
+        )
+    return RedirectResponse(url="/webhooks-ui", status_code=303)
 
 
 @app.post("/events-ui/{event_id}/decide")

@@ -143,6 +143,13 @@ Register a webhook subscription (business session required). Event types:
 - `conjunction.created` (new event created via inbox)
 - `screening.completed` (screening run summary)
 
+Each webhook request includes:
+
+- `Content-Type: application/json`
+- `X-Event-Type: <event_type>`
+- `X-Webhook-Id: <subscription_id>`
+- `X-Signature: <hex>` (optional; HMAC SHA256 of the JSON body using your subscription secret)
+
 Example (login + create subscription):
 
 ```bash
