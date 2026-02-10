@@ -104,6 +104,27 @@ async def ingest_orbit_state(
     # Trigger screening for this satellite to produce/update conjunction events.
     result = screening.screen_satellite(db, satellite.id)
     if result.updates_created:
-        background_tasks.add_task(webhooks.dispatch_event, "screening.completed", result.__dict__)
+        background_tasks.add_task(
+            webhooks.dispatch_event,
+            "screening.completed",
+            {
+                "satellite_id": int(result.satellite_id),
+                "screened_at": result.screened_at.isoformat(),
+                "events_updated": int(result.events_updated),
+                "events_created": int(result.events_created),
+                "updates_created": int(result.updates_created),
+                "event_changes": list(result.event_changes or []),
+            },
+        )
+    if result.event_changes:
+        background_tasks.add_task(
+            webhooks.dispatch_event,
+            "conjunction.changed",
+            {
+                "source": "screening",
+                "computed_at": result.screened_at.isoformat(),
+                "changes": list(result.event_changes),
+            },
+        )
 
     return orbit_state

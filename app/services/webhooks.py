@@ -10,10 +10,15 @@ from app.database import SessionLocal
 from app.settings import settings
 
 
+def _json_body(payload: Dict) -> str:
+    # Use a stable JSON encoding for signatures and transport.
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def sign_payload(secret: Optional[str], payload: Dict) -> Optional[str]:
     if not secret:
         return None
-    digest = hmac.new(secret.encode("utf-8"), json.dumps(payload).encode("utf-8"), sha256).hexdigest()
+    digest = hmac.new(secret.encode("utf-8"), _json_body(payload).encode("utf-8"), sha256).hexdigest()
     return digest
 
 
@@ -30,6 +35,7 @@ async def dispatch_event(event_type: str, payload: Dict) -> None:
             return
 
         timeout = settings.webhook_timeout_seconds
+        body = _json_body(payload)
         async with httpx.AsyncClient(timeout=timeout) as client:
             for sub in subscriptions:
                 headers = {"Content-Type": "application/json"}
@@ -37,7 +43,7 @@ async def dispatch_event(event_type: str, payload: Dict) -> None:
                 if signature:
                     headers["X-Signature"] = signature
                 try:
-                    await client.post(sub.url, json=payload, headers=headers)
+                    await client.post(sub.url, content=body, headers=headers)
                 except httpx.HTTPError:
                     continue
     finally:

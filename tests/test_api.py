@@ -136,3 +136,74 @@ def test_ui_pages_smoke():
     assert resp.status_code == 200
     resp = client.get("/catalog-ui")
     assert resp.status_code == 200
+
+
+def test_cdm_inbox_creates_and_dedupes_event():
+    login_business()
+
+    # Create a satellite/orbit state without generating screening events (altitude far from demo objects).
+    epoch = datetime.utcnow().isoformat()
+    payload = {
+        "epoch": epoch,
+        "state_vector": [8000, 0, 0, 0, 7.0, 0.0],
+        "confidence": 0.9,
+        "source": {"name": "operator-ephem", "type": "ephemeris"},
+        "satellite": {"name": "InboxSat", "catalog_id": "99999", "orbit_regime": "LEO", "status": "active"},
+    }
+    resp = client.post("/ingest/orbit-state", json=payload)
+    assert resp.status_code == 200
+
+    tca1 = datetime.utcnow().isoformat()
+    kvn1 = "\n".join(
+        [
+            "CCSDS_CDM_VERS = 1.0",
+            f"CREATION_DATE = {datetime.utcnow().isoformat()}",
+            "ORIGINATOR = TEST",
+            f"TCA = {tca1}",
+            "REF_FRAME = GCRS",
+            "MISS_DISTANCE = 50.0 [m]",
+            "RELATIVE_SPEED = 12.0 [m/s]",
+            "OBJECT = OBJECT1",
+            "NORAD_CAT_ID = 99999",
+            "OBJECT_NAME = INBOXSAT",
+            "X = 7000.0 [km]",
+            "Y = 0.0 [km]",
+            "Z = 0.0 [km]",
+            "X_DOT = 0.0 [km/s]",
+            "Y_DOT = 7.5 [km/s]",
+            "Z_DOT = 0.0 [km/s]",
+            "OBJECT = OBJECT2",
+            "NORAD_CAT_ID = 88888",
+            "OBJECT_NAME = INBOX-SECONDARY",
+            "X = 7000.05 [km]",
+            "Y = 0.0 [km]",
+            "Z = 0.0 [km]",
+            "X_DOT = 0.0 [km/s]",
+            "Y_DOT = 7.51 [km/s]",
+            "Z_DOT = 0.0 [km/s]",
+            "CR_R = 100.0 [m^2]",
+            "CT_R = 0.0 [m^2]",
+            "CT_T = 100.0 [m^2]",
+            "CN_R = 0.0 [m^2]",
+            "CN_T = 0.0 [m^2]",
+            "CN_N = 100.0 [m^2]",
+            "",
+        ]
+    )
+
+    r1 = client.post("/cdm/inbox", content=kvn1, headers={"content-type": "text/plain"})
+    assert r1.status_code == 200
+    data1 = r1.json()
+    event_id = data1["event_id"]
+    assert isinstance(event_id, int)
+
+    # Second message within +/-6h should dedupe to the same event and append an update.
+    tca2 = datetime.utcnow().isoformat()
+    kvn2 = kvn1.replace(f"TCA = {tca1}", f"TCA = {tca2}")
+    r2 = client.post("/cdm/inbox", content=kvn2, headers={"content-type": "text/plain"})
+    assert r2.status_code == 200
+    data2 = r2.json()
+    assert data2["event_id"] == event_id
+
+    detail = client.get(f"/events/{event_id}").json()
+    assert len(detail["updates"]) >= 2

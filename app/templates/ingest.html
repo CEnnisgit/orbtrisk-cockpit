@@ -62,6 +62,28 @@
 
   <form id="cdmForm" class="form" onsubmit="return false;">
     <div class="form-row">
+      <label>Inbox Mode</label>
+      <label class="panel-sub">
+        <input id="cdmInboxMode" type="checkbox" />
+        Auto-create/dedupe event (no Event ID required)
+      </label>
+      <span class="panel-sub">If checked, the server will match OBJECT1/OBJECT2 to your operator satellite and create/update the event timeline.</span>
+    </div>
+    <div class="form-row">
+      <label>Primary Satellite (optional)</label>
+      {% if satellites|length %}
+        <select id="cdmPrimarySatellite">
+          <option value="">Auto-detect from CDM</option>
+          {% for sat in satellites %}
+            <option value="{{ sat.id }}">#{{ sat.id }} — {{ sat.name }}</option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <div class="empty-state">No satellites yet. Add one first in <a href="/satellites-ui">Satellites</a>.</div>
+      {% endif %}
+      <span class="panel-sub">Use if CDM ordering is ambiguous.</span>
+    </div>
+    <div class="form-row">
       <label>Event (active)</label>
       {% if events|length %}
         <select id="cdmEventSelect">
@@ -121,6 +143,7 @@
   const cdmSubmitBtn = document.getElementById('cdmSubmitBtn');
   const cdmExampleBtn = document.getElementById('cdmExampleBtn');
   const cdmEventSelect = document.getElementById('cdmEventSelect');
+  const cdmInboxMode = document.getElementById('cdmInboxMode');
 
   function setCdmStatus(msg, kind = 'info') {
     if (!cdmStatus) return;
@@ -185,10 +208,12 @@
     try {
       setCdmStatus('Submitting…', 'info');
       cdmSubmitBtn.disabled = true;
+      const inbox = Boolean(cdmInboxMode && cdmInboxMode.checked);
       const eventId = selectedEventId();
-      if (!eventId) throw new Error('Select an event or enter an Event ID');
+      if (!inbox && !eventId) throw new Error('Select an event, enter an Event ID, or enable Inbox Mode');
 
       const override = str('cdmOverrideSecondary') === 'true';
+      const primarySat = str('cdmPrimarySatellite');
       const kvn = str('cdmKvn');
       const fileEl = document.getElementById('cdmFile');
       const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
@@ -198,23 +223,41 @@
         const form = new FormData();
         form.append('file', file);
         form.append('override_secondary', String(override));
+        if (primarySat) form.append('primary_satellite_id', primarySat);
         if (kvn) form.append('kvn', kvn);
-        resp = await fetch(`/events/${encodeURIComponent(eventId)}/cdm`, { method: 'POST', body: form });
+        const url = inbox ? '/cdm/inbox' : `/events/${encodeURIComponent(eventId)}/cdm`;
+        resp = await fetch(url, { method: 'POST', body: form });
       } else {
-        resp = await fetch(`/events/${encodeURIComponent(eventId)}/cdm?override_secondary=${override ? 'true' : 'false'}`, {
+        const url = inbox
+          ? `/cdm/inbox${primarySat ? `?primary_satellite_id=${encodeURIComponent(primarySat)}` : ''}`
+          : `/events/${encodeURIComponent(eventId)}/cdm?override_secondary=${override ? 'true' : 'false'}`;
+        resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
           body: kvn,
         });
       }
       if (!resp.ok) {
+        let detail = null;
+        try {
+          const data = await resp.json();
+          detail = data && data.detail ? data.detail : data;
+        } catch (e) {
+          // ignore
+        }
+        if (detail && detail.errors && Array.isArray(detail.errors)) {
+          throw new Error(detail.errors.join(' | '));
+        }
+        if (typeof detail === 'string') {
+          throw new Error(detail);
+        }
         const text = await resp.text();
         throw new Error(text || 'Request failed');
       }
       const data = await resp.json();
       const cov = data.covariance_present ? 'covariance: yes' : 'covariance: no';
       setCdmStatus(`Attached. Update #${data.update_id} (${cov}). Redirecting…`, 'ok');
-      window.location.href = `/events-ui/${encodeURIComponent(eventId)}`;
+      window.location.href = `/events-ui/${encodeURIComponent(String(data.event_id || eventId))}`;
     } catch (err) {
       setCdmStatus(`Failed: ${err.message || err}`, 'error');
     } finally {

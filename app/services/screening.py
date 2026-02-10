@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -24,6 +24,7 @@ class ScreeningResult:
     events_updated: int
     events_created: int
     updates_created: int
+    event_changes: list[dict] = field(default_factory=list)
 
 
 def _select_primary_state(db: Session, satellite_id: int, now: datetime) -> Optional[models.OrbitState]:
@@ -95,6 +96,7 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
             events_updated=0,
             events_created=0,
             updates_created=0,
+            event_changes=[],
         )
 
     primary_est = build_state_estimate(db, primary_state)
@@ -114,6 +116,7 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
     secondaries = _latest_valid_secondary_states(db, now)
 
     updated_event_ids: set[int] = set()
+    event_changes: list[dict] = []
     events_updated = 0
     events_created = 0
     updates_created = 0
@@ -143,6 +146,7 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
             space_object_id=secondary_state.space_object_id,
             tca=encounter.tca,
         )
+        created = False
         if event is None:
             event = models.ConjunctionEvent(
                 satellite_id=satellite_id,
@@ -159,8 +163,13 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
             db.add(event)
             db.flush()
             events_created += 1
+            created = True
         else:
             events_updated += 1
+
+        prev_tier = str(event.risk_tier or "unknown")
+        prev_conf = str(event.confidence_label or "D")
+        prev_miss = float(event.miss_distance) if event.miss_distance is not None else None
 
         # Compute RTN projections for trust-building visuals.
         s1 = frames.convert_state_vector_km(primary_est.propagate(encounter.tca), primary_est.frame, "GCRS", encounter.tca)
@@ -238,6 +247,24 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
         event.last_seen_at = now
         event.is_active = True
 
+        if prev_tier != str(event.risk_tier or "unknown") or prev_conf != str(event.confidence_label or "D"):
+            event_changes.append(
+                {
+                    "event_id": int(event.id),
+                    "update_id": int(update.id),
+                    "created": bool(created),
+                    "satellite_id": int(event.satellite_id),
+                    "space_object_id": int(event.space_object_id) if event.space_object_id is not None else None,
+                    "tca": event.tca.isoformat(),
+                    "miss_distance_km": float(event.miss_distance),
+                    "miss_distance_from_km": float(prev_miss) if prev_miss is not None else None,
+                    "risk_tier_from": prev_tier,
+                    "risk_tier_to": str(event.risk_tier or "unknown"),
+                    "confidence_from": prev_conf,
+                    "confidence_to": str(event.confidence_label or "D"),
+                }
+            )
+
         updated_event_ids.add(event.id)
 
     # Noise reduction: mark unseen future events as inactive.
@@ -259,6 +286,7 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
         events_updated=events_updated,
         events_created=events_created,
         updates_created=updates_created,
+        event_changes=event_changes,
     )
 
 
