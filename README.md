@@ -121,6 +121,39 @@ CN_N = 100.0 [m^2]
 CDM
 ```
 
+### CDM Inbox (auto-create/dedupe)
+
+If you don't already have an event ID, you can post the same KVN to the inbox endpoint. The server will:
+
+- Identify the operator satellite from `OBJECT1`/`OBJECT2`
+- Create/dedupe a `ConjunctionEvent` (one event, many updates)
+- Append a `ConjunctionEventUpdate` + store the raw CDM snapshot
+
+```bash
+curl -X POST http://127.0.0.1:8000/cdm/inbox \\
+  -H 'Content-Type: text/plain' \\
+  --data-binary @cdm_message.kvn
+```
+
+## Webhooks
+
+Register a webhook subscription (business session required). Event types:
+
+- `conjunction.changed` (tier or confidence label changed)
+- `conjunction.created` (new event created via inbox)
+- `screening.completed` (screening run summary)
+
+Example (login + create subscription):
+
+```bash
+curl -c cookies.txt -X POST http://127.0.0.1:8000/auth/login \\
+  -d 'access_code=dev-code&next=/dashboard'
+
+curl -b cookies.txt -X POST http://127.0.0.1:8000/webhooks \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"url\":\"https://example.com/webhook\",\"event_type\":\"conjunction.changed\",\"secret\":\"optional-shared-secret\"}'
+```
+
 ## Catalog Sync
 
 ```bash
