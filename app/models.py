@@ -177,6 +177,13 @@ class CdmRecord(Base):
     event_id = Column(Integer, ForeignKey("conjunction_events.id"), nullable=False, index=True)
     source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
     tca = Column(DateTime, nullable=False)
+    raw_path = Column(Text, nullable=True)
+    format = Column(String(32), nullable=False, default="CCSDS_CDM_KVN")
+    version = Column(String(16), nullable=True)
+    originator = Column(String(128), nullable=True)
+    ref_frame = Column(String(32), nullable=True)
+    object1_norad_cat_id = Column(Integer, nullable=True)
+    object2_norad_cat_id = Column(Integer, nullable=True)
     message_json = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

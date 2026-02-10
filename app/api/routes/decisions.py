@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import auth, models, schemas
 from app.database import get_db
 from app.services import audit
 
@@ -9,7 +9,8 @@ router = APIRouter()
 
 
 @router.post("/events/{event_id}/decisions", response_model=schemas.DecisionOut)
-def create_decision(event_id: int, payload: schemas.DecisionCreate, db: Session = Depends(get_db)):
+def create_decision(request: Request, event_id: int, payload: schemas.DecisionCreate, db: Session = Depends(get_db)):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")

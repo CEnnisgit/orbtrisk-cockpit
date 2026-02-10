@@ -123,10 +123,18 @@
             <p>Relative velocity: {{ "%.3f"|format(selected.relative_velocity) }} km/s</p>
             <p>Tier: <span class="pill {{ selected.risk_tier }}">{{ selected.risk_tier }}</span></p>
             <p>Confidence: <span class="pill {{ selected.confidence_label|lower }}">{{ selected.confidence_label }}</span></p>
+            {% if selected_cdm %}
+              <p class="panel-sub">
+                CDM attached (#{{
+                  selected_cdm["id"]
+                }}) · {{ selected_cdm["originator"] or "unknown" }}
+                {% if selected_cdm["creation_date"] %} · created {{ selected_cdm["creation_date"] }}{% endif %}
+              </p>
+            {% endif %}
           </div>
           <div class="card">
             <h4>Screening Risk</h4>
-            <div class="risk-score">Score: {{ "%.2f"|format(selected.risk_score or 0) }}</div>
+            <div class="risk-score">Screening index (0-1): {{ "%.2f"|format(selected.risk_score or 0) }}</div>
             {% if selected_update %}
               <div class="panel-sub">Top drivers: {{ (selected_update.drivers_json or [])|join(', ') }}</div>
               {% if selected_update.details_json and selected_update.details_json.components %}
@@ -217,6 +225,13 @@
           <h4>What Changed</h4>
           {% if selected_update %}
             <p class="panel-sub">Latest update at {{ selected_update.computed_at }}</p>
+            {% if selected_change %}
+              <p>Miss delta: {{ "%.3f"|format(selected_change["delta_miss_km"]) }} km</p>
+              <p>Tier: {{ selected_change["tier_from"] }} -> {{ selected_change["tier_to"] }}</p>
+              <p>Confidence: {{ selected_change["conf_from"] }} -> {{ selected_change["conf_to"] }}</p>
+            {% else %}
+              <p class="panel-sub">No prior update to compare.</p>
+            {% endif %}
           {% else %}
             <p class="panel-sub">No update history yet.</p>
           {% endif %}

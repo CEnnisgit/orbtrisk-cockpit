@@ -2,15 +2,15 @@ import io
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fpdf import FPDF
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import auth, models, schemas
 from app.database import get_db
 from app.settings import settings
-from app.services import conjunction, propagation
+from app.services import conjunction, frames, propagation
 from app.services.state_sources import StateEstimate, build_state_estimate
 
 router = APIRouter()
@@ -29,8 +29,8 @@ def _build_state_estimates(
 
 
 def _relative_state_at(primary: StateEstimate, secondary: StateEstimate, t: datetime) -> tuple[list[float], list[float]]:
-    s1 = primary.propagate(t)
-    s2 = secondary.propagate(t)
+    s1 = frames.convert_state_vector_km(primary.propagate(t), primary.frame, "GCRS", t)
+    s2 = frames.convert_state_vector_km(secondary.propagate(t), secondary.frame, "GCRS", t)
     r1 = propagation.position_from_state(s1)
     v1 = propagation.velocity_from_state(s1)
     r2 = propagation.position_from_state(s2)
@@ -42,6 +42,7 @@ def _relative_state_at(primary: StateEstimate, secondary: StateEstimate, t: date
 
 @router.get("/events", response_model=list[schemas.EventListItem])
 def list_events(
+    request: Request,
     since: Optional[datetime] = Query(default=None),
     status: Optional[str] = Query(default=None),
     risk_band: Optional[str] = Query(default=None),
@@ -49,6 +50,7 @@ def list_events(
     active_only: bool = Query(default=True),
     db: Session = Depends(get_db),
 ):
+    auth.require_business(request)
     query = db.query(models.ConjunctionEvent)
     if since:
         query = query.filter(models.ConjunctionEvent.tca >= since)
@@ -87,7 +89,8 @@ def list_events(
 
 
 @router.get("/events/{event_id}", response_model=schemas.EventDetailOut)
-def get_event(event_id: int, db: Session = Depends(get_db)):
+def get_event(request: Request, event_id: int, db: Session = Depends(get_db)):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -130,12 +133,14 @@ def get_event(event_id: int, db: Session = Depends(get_db)):
 
 @router.get("/events/{event_id}/series")
 def event_series(
+    request: Request,
     event_id: int,
     update_id: Optional[int] = None,
     window_hours: Optional[float] = None,
     step_seconds: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -191,12 +196,14 @@ def event_series(
 
 @router.get("/events/{event_id}/rtn-series")
 def event_rtn_series(
+    request: Request,
     event_id: int,
     update_id: Optional[int] = None,
     window_hours: Optional[float] = None,
     step_seconds: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -225,6 +232,7 @@ def event_rtn_series(
     if primary_est is not None and secondary_est is not None:
         try:
             s1_tca = primary_est.propagate(update.tca)
+            s1_tca = frames.convert_state_vector_km(s1_tca, primary_est.frame, "GCRS", update.tca)
             basis = conjunction.rtn_basis_from_primary_state(
                 propagation.position_from_state(s1_tca),
                 propagation.velocity_from_state(s1_tca),
@@ -271,7 +279,8 @@ def event_rtn_series(
 
 
 @router.get("/events/{event_id}/report")
-def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_db)):
+def event_report(request: Request, event_id: int, format: str = "pdf", db: Session = Depends(get_db)):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -304,6 +313,14 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
     pdf.set_font("Helvetica", "B", size=14)
     pdf.cell(0, 10, f"Conjunction Report - Event #{event.id}", ln=True)
 
+    pdf.set_font("Helvetica", "I", size=9)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        "Screening-level decision support only. Screening index is not probability of collision (Pc).",
+    )
+
     pdf.set_font("Helvetica", size=10)
     pdf.set_x(pdf.l_margin)
     pdf.multi_cell(0, 6, f"TCA: {event.tca.isoformat()}  Status: {event.status}  Active: {bool(event.is_active)}")
@@ -324,7 +341,7 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
     pdf.multi_cell(
         0,
         6,
-        f"Tier: {event.risk_tier.upper()}   Score: {event.risk_score:.3f}   Confidence: {event.confidence_label} ({event.confidence_score:.3f})",
+        f"Tier: {event.risk_tier.upper()}   Screening index (0-1): {event.risk_score:.3f}   Confidence: {event.confidence_label} ({event.confidence_score:.3f})",
     )
     if current_update and current_update.drivers_json:
         pdf.set_x(pdf.l_margin)
@@ -354,10 +371,24 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
         pdf.ln(2)
         pdf.set_font("Helvetica", "B", size=12)
         pdf.cell(0, 8, "CDM Attachments", ln=True)
+        pdf.set_font("Helvetica", "I", size=9)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 5, "CDM is a tracking message used for assessment, not a collision warning.")
         pdf.set_font("Helvetica", size=9)
         for rec in cdm_records:
+            creation_date = None
+            if isinstance(rec.message_json, dict):
+                kvn = rec.message_json.get("kvn")
+                if isinstance(kvn, dict):
+                    global_kv = kvn.get("global")
+                    if isinstance(global_kv, dict):
+                        creation_date = global_kv.get("CREATION_DATE")
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 5, f"CDM #{rec.id} | tca={rec.tca.isoformat()} | ingested={rec.created_at.isoformat()}")
+            pdf.multi_cell(
+                0,
+                5,
+                f"CDM #{rec.id} | originator={rec.originator or '-'} | created={creation_date or '-'} | frame={rec.ref_frame or '-'} | tca={rec.tca.isoformat()} | ingested={rec.created_at.isoformat()}",
+            )
 
     if decision:
         pdf.ln(2)
@@ -389,7 +420,8 @@ def event_report(event_id: int, format: str = "pdf", db: Session = Depends(get_d
 
 
 @router.post("/events/{event_id}/status")
-def update_status(event_id: int, status: str, db: Session = Depends(get_db)):
+def update_status(request: Request, event_id: int, status: str, db: Session = Depends(get_db)):
+    auth.require_business(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")

@@ -29,6 +29,12 @@
         <p>Relative velocity: {{ "%.3f"|format(event.relative_velocity) }} km/s</p>
         <p>Tier: <span class="pill {{ event.risk_tier }}">{{ event.risk_tier }}</span></p>
         <p>Confidence: <span class="pill {{ event.confidence_label|lower }}">{{ event.confidence_label }}</span></p>
+        {% if cdm_badge %}
+          <p class="panel-sub">
+            CDM attached (#{{ cdm_badge["id"] }}) · {{ cdm_badge["originator"] or "unknown" }}
+            {% if cdm_badge["creation_date"] %} · created {{ cdm_badge["creation_date"] }}{% endif %}
+          </p>
+        {% endif %}
         {% if geometry %}
           {% if geometry.r_rel_rtn_km and geometry.v_rel_rtn_km_s %}
             <p class="panel-sub">Geometry @TCA (RTN projection)</p>
@@ -52,9 +58,16 @@
       </div>
       <div class="card">
         <h3>Screening Risk</h3>
-        <div class="risk-score">Risk score: {{ "%.2f"|format(event.risk_score) }}</div>
+        <div class="risk-score">Screening index (0-1): {{ "%.2f"|format(event.risk_score) }}</div>
         {% if update %}
           <div class="panel-sub">Top drivers: {{ (update.drivers_json or [])|join(', ') }}</div>
+          {% if change %}
+            <div class="panel-sub">
+              What changed: miss {{ "%.3f"|format(change["delta_miss_km"]) }} km ·
+              tier {{ change["tier_from"] }} -> {{ change["tier_to"] }} ·
+              conf {{ change["conf_from"] }} -> {{ change["conf_to"] }}
+            </div>
+          {% endif %}
           {% if update.details_json and update.details_json.components %}
             <details class="details">
               <summary>Why this tier?</summary>

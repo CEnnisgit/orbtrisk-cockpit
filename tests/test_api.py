@@ -60,23 +60,49 @@ def test_attach_cdm_creates_update():
     events = client.get("/events").json()
     event_id = events[0]["event"]["id"]
 
-    payload = {
-        "tca": datetime.utcnow().isoformat(),
-        "relative_position_km": [0.02, 0.0, 0.0],
-        "relative_velocity_km_s": [0.0, 0.01, 0.0],
-        "combined_pos_covariance_km2": [
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        "hard_body_radius_m": 10.0,
-        "source": {"name": "cdm-test", "type": "public"},
-        "secondary_norad_cat_id": None,
-        "secondary_name": None,
-        "override_secondary": True,
-    }
+    tca = datetime.utcnow().isoformat()
+    kvn = "\n".join(
+        [
+            "CCSDS_CDM_VERS = 1.0",
+            f"CREATION_DATE = {datetime.utcnow().isoformat()}",
+            "ORIGINATOR = TEST",
+            f"TCA = {tca}",
+            "REF_FRAME = GCRS",
+            "MISS_DISTANCE = 20.0 [m]",
+            "RELATIVE_SPEED = 10.0 [m/s]",
+            "OBJECT = OBJECT1",
+            "NORAD_CAT_ID = 10000",
+            "OBJECT_NAME = ALPHA",
+            "X = 7000.0 [km]",
+            "Y = 0.0 [km]",
+            "Z = 0.0 [km]",
+            "X_DOT = 0.0 [km/s]",
+            "Y_DOT = 7.5 [km/s]",
+            "Z_DOT = 0.0 [km/s]",
+            "OBJECT = OBJECT2",
+            "NORAD_CAT_ID = 12345",
+            "OBJECT_NAME = CATALOG-DELTA",
+            "X = 7000.02 [km]",
+            "Y = 0.0 [km]",
+            "Z = 0.0 [km]",
+            "X_DOT = 0.0 [km/s]",
+            "Y_DOT = 7.51 [km/s]",
+            "Z_DOT = 0.0 [km/s]",
+            "CR_R = 100.0 [m^2]",
+            "CT_R = 0.0 [m^2]",
+            "CT_T = 100.0 [m^2]",
+            "CN_R = 0.0 [m^2]",
+            "CN_T = 0.0 [m^2]",
+            "CN_N = 100.0 [m^2]",
+            "",
+        ]
+    )
 
-    resp = client.post(f"/events/{event_id}/cdm", json=payload)
+    resp = client.post(
+        f"/events/{event_id}/cdm",
+        content=kvn,
+        headers={"content-type": "text/plain"},
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["event_id"] == event_id
@@ -110,4 +136,3 @@ def test_ui_pages_smoke():
     assert resp.status_code == 200
     resp = client.get("/catalog-ui")
     assert resp.status_code == 200
-

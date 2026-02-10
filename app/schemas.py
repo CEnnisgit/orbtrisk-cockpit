@@ -78,21 +78,14 @@ class OrbitStateOut(BaseModel):
         from_attributes = True
 
 
-class CdmAttachRequest(BaseModel):
-    tca: datetime
-    relative_position_km: List[float] = Field(..., min_length=3, max_length=3)
-    relative_velocity_km_s: List[float] = Field(..., min_length=3, max_length=3)
-    combined_pos_covariance_km2: List[List[float]] = Field(..., min_length=3, max_length=3)
-    hard_body_radius_m: Optional[float] = None
-    source: SourceCreate
-    secondary_norad_cat_id: Optional[int] = None
-    secondary_name: Optional[str] = None
-    override_secondary: bool = False
-
-
 class CdmAttachOut(BaseModel):
     event_id: int
     update_id: int
+    cdm_record_id: Optional[int] = None
+    tca: Optional[datetime] = None
+    originator: Optional[str] = None
+    ref_frame: Optional[str] = None
+    covariance_present: Optional[bool] = None
 
 
 class ConjunctionEventOut(BaseModel):
@@ -150,6 +143,13 @@ class CdmRecordOut(BaseModel):
     event_id: int
     source_id: Optional[int] = None
     tca: datetime
+    raw_path: Optional[str] = None
+    format: str
+    version: Optional[str] = None
+    originator: Optional[str] = None
+    ref_frame: Optional[str] = None
+    object1_norad_cat_id: Optional[int] = None
+    object2_norad_cat_id: Optional[int] = None
     created_at: datetime
 
     class Config:

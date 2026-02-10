@@ -11,3 +11,5 @@ fpdf2==2.7.9
 pytest==8.3.3
 sgp4==2.23
 spiceypy==6.0.0
+numpy==1.26.4
+astropy==6.0.1

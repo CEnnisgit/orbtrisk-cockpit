@@ -83,7 +83,9 @@ def seed_demo(db: Session) -> Dict[str, int]:
         satellite_id=None,
         space_object_id=catalog_object.id,
         epoch=epoch,
-        frame="TEME",
+        # Demo states are synthetic; keep a consistent inertial frame so
+        # screening produces at least one event without relying on TEME transforms.
+        frame="ECI",
         valid_from=epoch,
         valid_to=epoch + timedelta(days=7),
         state_vector=[7000.005, 0.002, 0.001, 0, 7.49, 0.01],

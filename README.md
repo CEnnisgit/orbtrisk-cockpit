@@ -15,6 +15,7 @@ A minimal FastAPI implementation of an **operator-first orbital conjunction deci
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export BUSINESS_ACCESS_CODE=dev-code
 uvicorn app.main:app --reload
 ```
 
@@ -35,7 +36,7 @@ Optional environment variables (see `app/settings.py`):
 - `CESIUM_ION_TOKEN` (default: unset; enables Cesium Ion imagery/terrain)
 - `CESIUM_NIGHT_ASSET_ID` (default: unset; optional night lights layer)
 - `SESSION_SECRET` (default: dev value; set to a long random string)
-- `BUSINESS_ACCESS_CODE` (default: unset; enables business-only tabs and APIs)
+- `BUSINESS_ACCESS_CODE` (default: unset; required; gates UI + API behind login)
 - `SCREENING_HORIZON_DAYS` (default: `14`)
 - `SCREENING_VOLUME_KM` (default: `10.0`)
 - `TIME_CRITICAL_HOURS` (default: `72`)
@@ -54,12 +55,16 @@ If you want the best public TLE freshness (and the most accurate results you can
 
 ## API Docs
 
-- OpenAPI/Swagger: `http://127.0.0.1:8000/docs`
-- ReDoc: `http://127.0.0.1:8000/redoc`
+- Health (no auth): `http://127.0.0.1:8000/healthz`
+- OpenAPI/Swagger (business login required): `http://127.0.0.1:8000/docs`
+- ReDoc (business login required): `http://127.0.0.1:8000/redoc`
 
 ## Notes
 
 This MVP is a screening tool: it does not claim high-precision prediction. It is intentionally designed for clarity and extendability over physical fidelity.
+
+- Frames: internal relative computations are done in `GCRS`. `TEME` states (SGP4 output) are converted via `astropy`. For MVP, `ECI` / `GCRF` / `EME2000` / `J2000` inputs are treated as `GCRS`-like (approximation; document any operational requirements before relying on it).
+- Astropy IERS auto-download is disabled at runtime; some transforms may use degraded accuracy outside bundled IERS coverage.
 
 
 ## Example Ingestion
@@ -74,20 +79,46 @@ curl -X POST http://127.0.0.1:8000/ingest/orbit-state   -H 'Content-Type: applic
   }'
 ```
 
-## CDM-Lite Attachment
+## CCSDS CDM (KVN) Attachment
 
-This MVP supports attaching a simplified CDM-like payload (relative state + combined position covariance at TCA) to an existing event:
+This MVP supports attaching a CCSDS CDM (KVN text) to an existing event. If covariance is present, confidence is boosted (still no Pc; this is screening-level decision support).
 
 ```bash
-curl -X POST http://127.0.0.1:8000/events/1/cdm -H 'Content-Type: application/json' -d '{
-  "tca": "2026-02-04T00:00:00Z",
-  "relative_position_km": [0.02, 0.0, 0.0],
-  "relative_velocity_km_s": [0.0, 0.01, 0.0],
-  "combined_pos_covariance_km2": [[1,0,0],[0,1,0],[0,0,1]],
-  "hard_body_radius_m": 10,
-  "source": {"name": "cdm", "type": "public"},
-  "override_secondary": true
-}'
+curl -X POST http://127.0.0.1:8000/events/1/cdm \\
+  -H 'Content-Type: text/plain' \\
+  --data-binary @- <<'CDM'
+CCSDS_CDM_VERS = 1.0
+CREATION_DATE = 2026-02-10T00:00:00Z
+ORIGINATOR = TEST
+TCA = 2026-02-11T12:34:56Z
+REF_FRAME = GCRS
+MISS_DISTANCE = 20.0 [m]
+RELATIVE_SPEED = 10.0 [m/s]
+OBJECT = OBJECT1
+NORAD_CAT_ID = 10000
+OBJECT_NAME = ALPHA
+X = 7000.0 [km]
+Y = 0.0 [km]
+Z = 0.0 [km]
+X_DOT = 0.0 [km/s]
+Y_DOT = 7.5 [km/s]
+Z_DOT = 0.0 [km/s]
+OBJECT = OBJECT2
+NORAD_CAT_ID = 12345
+OBJECT_NAME = CATALOG-DELTA
+X = 7000.02 [km]
+Y = 0.0 [km]
+Z = 0.0 [km]
+X_DOT = 0.0 [km/s]
+Y_DOT = 7.51 [km/s]
+Z_DOT = 0.0 [km/s]
+CR_R = 100.0 [m^2]
+CT_R = 0.0 [m^2]
+CT_T = 100.0 [m^2]
+CN_R = 0.0 [m^2]
+CN_T = 0.0 [m^2]
+CN_N = 100.0 [m^2]
+CDM
 ```
 
 ## Catalog Sync

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.settings import settings
-from app.services import conjunction, propagation, risk
+from app.services import conjunction, frames, propagation, risk
 from app.services.state_sources import StateEstimate, build_state_estimate
 
 
@@ -106,7 +106,8 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
 
     # Precompute primary altitude to filter secondaries quickly.
     try:
-        primary_alt = propagation.altitude_km(primary_est.propagate(t_start))
+        primary_start = frames.convert_state_vector_km(primary_est.propagate(t_start), primary_est.frame, "GCRS", t_start)
+        primary_alt = propagation.altitude_km(primary_start)
     except Exception:
         primary_alt = 0.0
 
@@ -123,7 +124,10 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
         secondary_est = build_state_estimate(db, secondary_state)
 
         try:
-            secondary_alt = propagation.altitude_km(secondary_est.propagate(t_start))
+            secondary_start = frames.convert_state_vector_km(
+                secondary_est.propagate(t_start), secondary_est.frame, "GCRS", t_start
+            )
+            secondary_alt = propagation.altitude_km(secondary_start)
         except Exception:
             continue
         if abs(primary_alt - secondary_alt) > float(CATALOG_ALTITUDE_WINDOW_KM):
@@ -159,7 +163,7 @@ def screen_satellite(db: Session, satellite_id: int, *, horizon_days: Optional[i
             events_updated += 1
 
         # Compute RTN projections for trust-building visuals.
-        s1 = primary_est.propagate(encounter.tca)
+        s1 = frames.convert_state_vector_km(primary_est.propagate(encounter.tca), primary_est.frame, "GCRS", encounter.tca)
         basis = conjunction.rtn_basis_from_primary_state(
             propagation.position_from_state(s1),
             propagation.velocity_from_state(s1),

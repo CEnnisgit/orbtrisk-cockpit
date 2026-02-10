@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence, Tuple
 
-from app.services import propagation
+from app.services import frames, propagation
 from app.services.state_sources import StateEstimate
 
 
@@ -32,8 +32,8 @@ def _relative_state_at(
     secondary: StateEstimate,
     t: datetime,
 ) -> Tuple[list[float], list[float]]:
-    s1 = primary.propagate(t)
-    s2 = secondary.propagate(t)
+    s1 = frames.convert_state_vector_km(primary.propagate(t), primary.frame, "GCRS", t)
+    s2 = frames.convert_state_vector_km(secondary.propagate(t), secondary.frame, "GCRS", t)
     r1 = propagation.position_from_state(s1)
     v1 = propagation.velocity_from_state(s1)
     r2 = propagation.position_from_state(s2)
@@ -163,4 +163,3 @@ def project_to_rtn(vec_eci: Sequence[float], basis: tuple[Sequence[float], Seque
         float(propagation.dot(vec_eci, t_hat)),
         float(propagation.dot(vec_eci, n_hat)),
     ]
-

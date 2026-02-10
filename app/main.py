@@ -4,7 +4,7 @@ from typing import Dict, Optional
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -33,12 +33,6 @@ from app.settings import settings
 
 app = FastAPI(title="Space Risk & Collision Avoidance MVP")
 app.add_middleware(GZipMiddleware, minimum_size=500)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.session_secret,
-    same_site="lax",
-    https_only=False,
-)
 
 app.include_router(ingestion.router, tags=["ingestion"])
 app.include_router(satellites.router, tags=["satellites"])
@@ -59,9 +53,55 @@ templates = Jinja2Templates(directory="app/templates")
 
 @app.middleware("http")
 async def add_template_globals(request: Request, call_next):
-    # Make auth state available in every template.
     request.state.is_business = auth.is_business(request)
+
+    allow_prefixes = ("/static",)
+    allow_paths = {"/auth/login", "/auth/logout", "/healthz"}
+
+    path = request.url.path
+    if path in allow_paths or any(path.startswith(prefix) for prefix in allow_prefixes):
+        return await call_next(request)
+
+    if not request.state.is_business:
+        # UI pages redirect to login; APIs return JSON 403.
+        html_prefixes = (
+            "/",
+            "/dashboard",
+            "/events-ui",
+            "/satellites-ui",
+            "/ingest-ui",
+            "/catalog-ui",
+            "/audit-ui",
+        )
+        docs_paths = {"/docs", "/redoc", "/openapi.json"}
+
+        if path in docs_paths:
+            return JSONResponse(status_code=403, content={"detail": "Business access required"})
+
+        if path == "/" or any(path.startswith(prefix) for prefix in html_prefixes if prefix != "/"):
+            next_path = request.url.path
+            if request.url.query:
+                next_path = f"{next_path}?{request.url.query}"
+            return auth.login_redirect(next_path)
+
+        return JSONResponse(status_code=403, content={"detail": "Business access required"})
+
     return await call_next(request)
+
+
+# SessionMiddleware must wrap this middleware so request.scope["session"]
+# is populated before auth checks.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    same_site="lax",
+    https_only=False,
+)
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 @app.get("/auth/login", response_class=HTMLResponse)
@@ -259,14 +299,54 @@ def events_ui(
 
     selected = None
     selected_update = None
+    selected_prev_update = None
+    selected_change = None
     selected_decision = None
     selected_runbook = None
     selected_object = None
+    selected_cdm = None
     if event_id:
         selected = db.get(models.ConjunctionEvent, event_id)
         if selected:
             if selected.current_update_id:
                 selected_update = db.get(models.ConjunctionEventUpdate, int(selected.current_update_id))
+            if selected_update:
+                selected_prev_update = (
+                    db.query(models.ConjunctionEventUpdate)
+                    .filter(models.ConjunctionEventUpdate.event_id == event_id)
+                    .filter(models.ConjunctionEventUpdate.computed_at < selected_update.computed_at)
+                    .order_by(models.ConjunctionEventUpdate.computed_at.desc())
+                    .first()
+                )
+                if selected_prev_update:
+                    selected_change = {
+                        "delta_miss_km": float(selected_update.miss_distance_km) - float(selected_prev_update.miss_distance_km),
+                        "tier_from": str(selected_prev_update.risk_tier),
+                        "tier_to": str(selected_update.risk_tier),
+                        "conf_from": str(selected_prev_update.confidence_label),
+                        "conf_to": str(selected_update.confidence_label),
+                    }
+
+            latest_cdm = (
+                db.query(models.CdmRecord)
+                .filter(models.CdmRecord.event_id == event_id)
+                .order_by(models.CdmRecord.id.desc())
+                .first()
+            )
+            if latest_cdm:
+                creation_date = None
+                if isinstance(latest_cdm.message_json, dict):
+                    kvn = latest_cdm.message_json.get("kvn")
+                    if isinstance(kvn, dict):
+                        global_kv = kvn.get("global")
+                        if isinstance(global_kv, dict):
+                            creation_date = global_kv.get("CREATION_DATE")
+                selected_cdm = {
+                    "id": int(latest_cdm.id),
+                    "originator": latest_cdm.originator,
+                    "creation_date": creation_date,
+                    "ingested_at": latest_cdm.created_at,
+                }
             selected_decision = (
                 db.query(models.Decision)
                 .filter(models.Decision.event_id == event_id)
@@ -303,9 +383,12 @@ def events_ui(
             "filter_query": filter_query,
             "selected": selected,
             "selected_update": selected_update,
+            "selected_prev_update": selected_prev_update,
+            "selected_change": selected_change,
             "selected_decision": selected_decision,
             "selected_runbook": selected_runbook,
             "selected_object": selected_object,
+            "selected_cdm": selected_cdm,
             "presets": presets,
         },
     )
@@ -340,6 +423,16 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
         .limit(20)
         .all()
     )
+    change = None
+    if update and len(updates) >= 2 and updates[0].id == update.id:
+        prev = updates[1]
+        change = {
+            "delta_miss_km": float(update.miss_distance_km) - float(prev.miss_distance_km),
+            "tier_from": str(prev.risk_tier),
+            "tier_to": str(update.risk_tier),
+            "conf_from": str(prev.confidence_label),
+            "conf_to": str(update.confidence_label),
+        }
     decision = (
         db.query(models.Decision)
         .filter(models.Decision.event_id == event_id)
@@ -359,6 +452,28 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
             .order_by(models.Runbook.id.desc())
             .first()
         )
+
+    latest_cdm = (
+        db.query(models.CdmRecord)
+        .filter(models.CdmRecord.event_id == event_id)
+        .order_by(models.CdmRecord.id.desc())
+        .first()
+    )
+    cdm_badge = None
+    if latest_cdm:
+        creation_date = None
+        if isinstance(latest_cdm.message_json, dict):
+            kvn = latest_cdm.message_json.get("kvn")
+            if isinstance(kvn, dict):
+                global_kv = kvn.get("global")
+                if isinstance(global_kv, dict):
+                    creation_date = global_kv.get("CREATION_DATE")
+        cdm_badge = {
+            "id": int(latest_cdm.id),
+            "originator": latest_cdm.originator,
+            "creation_date": creation_date,
+            "ingested_at": latest_cdm.created_at,
+        }
     return templates.TemplateResponse(
         "event_detail.html",
         {
@@ -367,10 +482,12 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
             "time_to_tca_hours": (event.tca - datetime.utcnow()).total_seconds() / 3600.0,
             "update": update,
             "updates": updates,
+            "change": change,
             "decision": decision,
             "runbook": runbook,
             "space_object": space_object,
             "geometry": update,
+            "cdm_badge": cdm_badge,
         },
     )
 
@@ -604,9 +721,32 @@ def catalog_detail_ui(object_id: int, request: Request, db: Session = Depends(ge
 def ingest_ui(request: Request, db: Session = Depends(get_db)):
     _require_business_ui(request)
     satellites = db.query(models.Satellite).order_by(models.Satellite.id.asc()).all()
+    active_events = (
+        db.query(models.ConjunctionEvent)
+        .filter(models.ConjunctionEvent.is_active.is_(True))
+        .order_by(models.ConjunctionEvent.tca.asc())
+        .limit(200)
+        .all()
+    )
+    so_ids = {e.space_object_id for e in active_events if e.space_object_id}
+    so_map = {}
+    if so_ids:
+        space_objects = db.query(models.SpaceObject).filter(models.SpaceObject.id.in_(so_ids)).all()
+        so_map = {so.id: so for so in space_objects}
+    events = []
+    for ev in active_events:
+        space_object = so_map.get(ev.space_object_id) if ev.space_object_id else None
+        events.append(
+            {
+                "id": ev.id,
+                "satellite_id": ev.satellite_id,
+                "tca": ev.tca,
+                "object_name": space_object.name if space_object else None,
+            }
+        )
     return templates.TemplateResponse(
         "ingest.html",
-        {"request": request, "satellites": satellites},
+        {"request": request, "satellites": satellites, "events": events},
     )
 
 

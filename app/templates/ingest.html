@@ -52,18 +52,32 @@
 <section class="panel">
   <div class="panel-header">
     <div>
-      <h2>Add Tracking Message (CDM-lite)</h2>
-      <span class="panel-sub">Attach relative state + covariance at closest approach.</span>
+      <h2>Attach CCSDS CDM (KVN)</h2>
+      <span class="panel-sub">Paste or upload a CDM KVN text message to update an existing event.</span>
     </div>
   </div>
   <div class="notice">
-    This is a simplified CDM input that attaches to an existing conjunction event.
+    A CDM is a tracking message used for assessment, not a collision warning.
   </div>
 
   <form id="cdmForm" class="form" onsubmit="return false;">
     <div class="form-row">
-      <label>Event</label>
-      <input id="cdmEventId" type="number" placeholder="Event ID" required />
+      <label>Event (active)</label>
+      {% if events|length %}
+        <select id="cdmEventSelect">
+          <option value="">Select an event...</option>
+          {% for e in events %}
+            <option value="{{ e.id }}">#{{ e.id }} — sat {{ e.satellite_id }} vs {{ e.object_name or '-' }} — TCA {{ e.tca }}</option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <div class="empty-state">No active events yet. Run screening in <a href="/events-ui">Alerts</a>.</div>
+      {% endif %}
+    </div>
+    <div class="form-row">
+      <label>Event ID (manual)</label>
+      <input id="cdmEventId" type="number" placeholder="Event ID" />
+      <span class="panel-sub">Use if the event is not in the dropdown.</span>
     </div>
     <div class="form-row">
       <label>Override Secondary Match</label>
@@ -73,63 +87,18 @@
       </select>
     </div>
     <div class="form-row">
-      <label>TCA (UTC ISO)</label>
-      <input id="cdmTca" type="text" placeholder="2026-02-04T00:00:00Z" required />
+      <label>CDM KVN Text</label>
+      <textarea id="cdmKvn" rows="14" placeholder="Paste CCSDS CDM KVN here..."></textarea>
+      <span class="panel-sub">Include OBJECT1/OBJECT2 state vectors, REF_FRAME, and MISS_DISTANCE with units.</span>
     </div>
     <div class="form-row">
-      <label>Secondary NORAD ID (optional)</label>
-      <input id="cdmNorad" type="number" placeholder="25544" />
-    </div>
-    <div class="form-row">
-      <label>Secondary Name (optional)</label>
-      <input id="cdmSecondaryName" type="text" placeholder="ISS (ZARYA)" />
-    </div>
-
-    <div class="form-row">
-      <label>Relative Position r_rel (km)</label>
-      <div class="triple">
-        <input id="cdmRx" type="number" step="0.001" placeholder="x" required />
-        <input id="cdmRy" type="number" step="0.001" placeholder="y" required />
-        <input id="cdmRz" type="number" step="0.001" placeholder="z" required />
-      </div>
-    </div>
-    <div class="form-row">
-      <label>Relative Velocity v_rel (km/s)</label>
-      <div class="triple">
-        <input id="cdmVx" type="number" step="0.0001" placeholder="vx" required />
-        <input id="cdmVy" type="number" step="0.0001" placeholder="vy" required />
-        <input id="cdmVz" type="number" step="0.0001" placeholder="vz" required />
-      </div>
-    </div>
-    <div class="form-row">
-      <label>1-sigma Position Uncertainty (km)</label>
-      <div class="triple">
-        <input id="cdmSx" type="number" step="0.001" placeholder="sigma-x" value="1.0" required />
-        <input id="cdmSy" type="number" step="0.001" placeholder="sigma-y" value="1.0" required />
-        <input id="cdmSz" type="number" step="0.001" placeholder="sigma-z" value="1.0" required />
-      </div>
-    </div>
-    <div class="form-row">
-      <label>Hard-body Radius (m)</label>
-      <input id="cdmHbr" type="number" step="0.1" value="10" disabled />
-      <span class="panel-sub">Not used for screening-level risk (reserved for future).</span>
-    </div>
-    <div class="form-row">
-      <label>Source Name</label>
-      <input id="cdmSourceName" type="text" value="cdm" />
-    </div>
-    <div class="form-row">
-      <label>Source Type</label>
-      <select id="cdmSourceType">
-        <option value="public">public</option>
-        <option value="commercial">commercial</option>
-        <option value="ephemeris">ephemeris</option>
-      </select>
+      <label>Upload CDM File (optional)</label>
+      <input id="cdmFile" type="file" accept=".txt,.kvn,.cdm,text/plain" />
     </div>
 
     <div class="form-actions">
       <button id="cdmExampleBtn" class="secondary" type="button">Fill Example</button>
-      <button id="cdmSubmitBtn" class="primary" type="button" {% if not satellites|length %}disabled{% endif %}>Add CDM</button>
+      <button id="cdmSubmitBtn" class="primary" type="button" {% if not satellites|length %}disabled{% endif %}>Attach CDM</button>
       <span id="cdmStatus" class="panel-sub"></span>
     </div>
   </form>
@@ -151,6 +120,7 @@
   const cdmStatus = document.getElementById('cdmStatus');
   const cdmSubmitBtn = document.getElementById('cdmSubmitBtn');
   const cdmExampleBtn = document.getElementById('cdmExampleBtn');
+  const cdmEventSelect = document.getElementById('cdmEventSelect');
 
   function setCdmStatus(msg, kind = 'info') {
     if (!cdmStatus) return;
@@ -158,75 +128,93 @@
     cdmStatus.dataset.kind = kind;
   }
 
-  function num(id) {
-    const el = document.getElementById(id);
-    return el ? Number(el.value) : NaN;
-  }
-
   function str(id) {
     const el = document.getElementById(id);
     return el ? String(el.value || '').trim() : '';
   }
 
-  function buildCdmPayload() {
-    const sx = num('cdmSx'), sy = num('cdmSy'), sz = num('cdmSz');
-    const cov = [
-      [sx * sx, 0, 0],
-      [0, sy * sy, 0],
-      [0, 0, sz * sz],
-    ];
-    const noradRaw = str('cdmNorad');
-    const norad = noradRaw ? Number(noradRaw) : null;
-
-    return {
-      tca: str('cdmTca'),
-      relative_position_km: [num('cdmRx'), num('cdmRy'), num('cdmRz')],
-      relative_velocity_km_s: [num('cdmVx'), num('cdmVy'), num('cdmVz')],
-      combined_pos_covariance_km2: cov,
-      hard_body_radius_m: num('cdmHbr') || 10.0,
-      source: { name: str('cdmSourceName') || 'cdm', type: str('cdmSourceType') || 'public' },
-      secondary_norad_cat_id: norad,
-      secondary_name: str('cdmSecondaryName') || null,
-      override_secondary: str('cdmOverrideSecondary') === 'true',
-    };
+  function selectedEventId() {
+    const manual = str('cdmEventId');
+    if (manual) return manual;
+    const fromSelect = cdmEventSelect ? String(cdmEventSelect.value || '').trim() : '';
+    return fromSelect;
   }
 
   cdmExampleBtn?.addEventListener('click', () => {
-    document.getElementById('cdmEventId').value = 1;
-    document.getElementById('cdmTca').value = new Date().toISOString();
-    document.getElementById('cdmNorad').value = 25544;
-    document.getElementById('cdmSecondaryName').value = 'ISS (ZARYA)';
-    document.getElementById('cdmRx').value = 0.02;
-    document.getElementById('cdmRy').value = 0.0;
-    document.getElementById('cdmRz').value = 0.0;
-    document.getElementById('cdmVx').value = 0.0;
-    document.getElementById('cdmVy').value = 0.01;
-    document.getElementById('cdmVz').value = 0.0;
-    document.getElementById('cdmSx').value = 1.0;
-    document.getElementById('cdmSy').value = 1.0;
-    document.getElementById('cdmSz').value = 1.0;
-    document.getElementById('cdmHbr').value = 10.0;
-    setCdmStatus('Example filled. Click Add CDM to ingest.', 'info');
+    const tca = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const example = [
+      'CCSDS_CDM_VERS = 1.0',
+      `CREATION_DATE = ${new Date().toISOString()}`,
+      'ORIGINATOR = DEMO',
+      `TCA = ${tca}`,
+      'REF_FRAME = GCRS',
+      'MISS_DISTANCE = 20.0 [m]',
+      'RELATIVE_SPEED = 10.0 [m/s]',
+      'OBJECT = OBJECT1',
+      'NORAD_CAT_ID = 10000',
+      'OBJECT_NAME = ALPHA',
+      'X = 7000.0 [km]',
+      'Y = 0.0 [km]',
+      'Z = 0.0 [km]',
+      'X_DOT = 0.0 [km/s]',
+      'Y_DOT = 7.5 [km/s]',
+      'Z_DOT = 0.0 [km/s]',
+      'OBJECT = OBJECT2',
+      'NORAD_CAT_ID = 12345',
+      'OBJECT_NAME = CATALOG-DELTA',
+      'X = 7000.02 [km]',
+      'Y = 0.0 [km]',
+      'Z = 0.0 [km]',
+      'X_DOT = 0.0 [km/s]',
+      'Y_DOT = 7.51 [km/s]',
+      'Z_DOT = 0.0 [km/s]',
+      'CR_R = 100.0 [m^2]',
+      'CT_R = 0.0 [m^2]',
+      'CT_T = 100.0 [m^2]',
+      'CN_R = 0.0 [m^2]',
+      'CN_T = 0.0 [m^2]',
+      'CN_N = 100.0 [m^2]',
+      '',
+    ].join('\\n');
+    const kvnEl = document.getElementById('cdmKvn');
+    if (kvnEl) kvnEl.value = example;
+    setCdmStatus('Example filled. Click Attach CDM to ingest.', 'info');
   });
 
   cdmSubmitBtn?.addEventListener('click', async () => {
     try {
       setCdmStatus('Submitting…', 'info');
       cdmSubmitBtn.disabled = true;
-      const payload = buildCdmPayload();
-      const eventId = Number(str('cdmEventId'));
-      const resp = await fetch(`/events/${eventId}/cdm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const eventId = selectedEventId();
+      if (!eventId) throw new Error('Select an event or enter an Event ID');
+
+      const override = str('cdmOverrideSecondary') === 'true';
+      const kvn = str('cdmKvn');
+      const fileEl = document.getElementById('cdmFile');
+      const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+
+      let resp;
+      if (file) {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('override_secondary', String(override));
+        if (kvn) form.append('kvn', kvn);
+        resp = await fetch(`/events/${encodeURIComponent(eventId)}/cdm`, { method: 'POST', body: form });
+      } else {
+        resp = await fetch(`/events/${encodeURIComponent(eventId)}/cdm?override_secondary=${override ? 'true' : 'false'}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: kvn,
+        });
+      }
       if (!resp.ok) {
         const text = await resp.text();
         throw new Error(text || 'Request failed');
       }
       const data = await resp.json();
-      setCdmStatus(`Attached. Update #${data.update_id}. Redirecting…`, 'ok');
-      window.location.href = `/events-ui/${data.event_id}`;
+      const cov = data.covariance_present ? 'covariance: yes' : 'covariance: no';
+      setCdmStatus(`Attached. Update #${data.update_id} (${cov}). Redirecting…`, 'ok');
+      window.location.href = `/events-ui/${encodeURIComponent(eventId)}`;
     } catch (err) {
       setCdmStatus(`Failed: ${err.message || err}`, 'error');
     } finally {

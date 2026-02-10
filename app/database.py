@@ -109,6 +109,29 @@ def _ensure_sqlite_columns(engine):
         if "checklist_json" not in columns:
             conn.exec_driver_sql("ALTER TABLE decisions ADD COLUMN checklist_json JSON")
 
+        res = conn.exec_driver_sql("PRAGMA table_info(cdm_records)")
+        columns = {row[1] for row in res}
+        if columns:
+            if "raw_path" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN raw_path TEXT")
+            if "format" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE cdm_records ADD COLUMN format VARCHAR(32) DEFAULT 'CCSDS_CDM_KVN' NOT NULL"
+                )
+            if "version" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN version VARCHAR(16)")
+            if "originator" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN originator VARCHAR(128)")
+            if "ref_frame" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN ref_frame VARCHAR(32)")
+            if "object1_norad_cat_id" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN object1_norad_cat_id INTEGER")
+            if "object2_norad_cat_id" not in columns:
+                conn.exec_driver_sql("ALTER TABLE cdm_records ADD COLUMN object2_norad_cat_id INTEGER")
+            conn.exec_driver_sql(
+                "UPDATE cdm_records SET format = 'CCSDS_CDM_KVN' WHERE format IS NULL"
+            )
+
 
 def _ensure_orbit_states_schema(conn):
     res = conn.exec_driver_sql("PRAGMA table_info(orbit_states)")
