@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from app.security import safe_next_path
+
 
 def session_role(request: Request) -> str:
     # Starlette's Request.session property asserts SessionMiddleware is installed.
@@ -34,5 +36,5 @@ def business_access_configured(access_code: Optional[str]) -> bool:
 
 
 def login_redirect(next_path: str = "/dashboard") -> RedirectResponse:
-    params = urlencode({"next": next_path})
+    params = urlencode({"next": safe_next_path(next_path)})
     return RedirectResponse(url=f"/auth/login?{params}", status_code=303)

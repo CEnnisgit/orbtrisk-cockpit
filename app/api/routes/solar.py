@@ -2,8 +2,9 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from app import auth
 from app.services import spice_service, solar_small_bodies
 
 router = APIRouter()
@@ -25,10 +26,12 @@ def _cache_key(epoch: str, include_small_bodies: bool, category: Optional[str]) 
 
 @router.get("/solar/positions")
 def solar_positions(
+    request: Request,
     epoch: Optional[str] = None,
     include_small_bodies: bool = True,
     category: Optional[str] = None,
 ):
+    auth.require_business(request)
     if not epoch:
         epoch = datetime.now(timezone.utc).isoformat()
 

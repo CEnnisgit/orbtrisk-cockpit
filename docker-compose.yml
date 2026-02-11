@@ -4,10 +4,14 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - APP_ENV=${APP_ENV:-development}
       - DATABASE_URL=sqlite:///./spaceops.db
       - RAW_DATA_DIR=./data/raw
       - SESSION_SECRET=${SESSION_SECRET:-dev-session-secret-change-me}
       - BUSINESS_ACCESS_CODE=${BUSINESS_ACCESS_CODE:-change-me}
+      - SESSION_HTTPS_ONLY=${SESSION_HTTPS_ONLY:-false}
+      - TRUSTED_HOSTS=${TRUSTED_HOSTS:-localhost,127.0.0.1}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
     volumes:
       - ./spaceops.db:/app/spaceops.db
       - ./data:/app/data

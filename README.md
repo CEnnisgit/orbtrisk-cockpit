@@ -25,6 +25,7 @@ App runs at `http://127.0.0.1:8000`.
 
 Optional environment variables (see `app/settings.py`):
 
+- `APP_ENV` (default: `development`; set `production` for live)
 - `DATABASE_URL` (default: `sqlite:///./spaceops.db`)
 - `RAW_DATA_DIR` (default: `./data/raw`)
 - `WEBHOOK_TIMEOUT_SECONDS` (default: `3.0`)
@@ -36,13 +37,46 @@ Optional environment variables (see `app/settings.py`):
 - `CESIUM_ION_TOKEN` (default: unset; enables Cesium Ion imagery/terrain)
 - `CESIUM_NIGHT_ASSET_ID` (default: unset; optional night lights layer)
 - `SESSION_SECRET` (default: dev value; set to a long random string)
+- `SESSION_HTTPS_ONLY` (default: auto; true in production unless explicitly overridden)
+- `SESSION_SAME_SITE` (default: `lax`)
+- `SESSION_MAX_AGE_SECONDS` (default: `28800`)
 - `BUSINESS_ACCESS_CODE` (default: unset; required; gates UI + API behind login)
+- `TRUSTED_HOSTS` (default: `localhost,127.0.0.1,testserver`)
+- `TRUSTED_HOSTS_ALLOW_ALL` (default: `false`; only set true for local troubleshooting)
+- `TRUST_PROXY_HEADERS` (default: `false`; set true behind a reverse proxy)
+- `ENFORCE_ORIGIN_CHECK` (default: `true`; blocks cross-site state-changing requests)
+- `ALLOWED_ORIGINS` (default: unset; optional comma-separated extra origins)
+- `LOGIN_RATE_LIMIT_ATTEMPTS` (default: `8`)
+- `LOGIN_RATE_LIMIT_WINDOW_SECONDS` (default: `300`)
+- `WEBHOOK_ALLOWED_SCHEMES` (default: `https`)
+- `WEBHOOK_ALLOW_PRIVATE_TARGETS` (default: `false`)
+- `WEBHOOK_ALLOW_HTTP_LOCALHOST` (default: `true` for local testing)
 - `SCREENING_HORIZON_DAYS` (default: `14`)
 - `SCREENING_VOLUME_KM` (default: `10.0`)
 - `TIME_CRITICAL_HOURS` (default: `72`)
 - `TLE_MAX_AGE_HOURS_FOR_CONFIDENCE` (default: `72`)
 - `ORBIT_STATE_RETENTION_DAYS` (default: `30`)
 - `TLE_RECORD_RETENTION_DAYS` (default: `90`)
+
+## Production Launch Checklist
+
+Before pointing `orbitrisk.net` at your live instance:
+
+1. Set strong secrets:
+   - `SESSION_SECRET` (>=32 random chars)
+   - `BUSINESS_ACCESS_CODE` (high-entropy string)
+2. Set production flags:
+   - `APP_ENV=production`
+   - `SESSION_HTTPS_ONLY=true`
+   - `TRUSTED_HOSTS=orbitrisk.net,www.orbitrisk.net`
+   - `ALLOWED_ORIGINS=https://orbitrisk.net,https://www.orbitrisk.net`
+3. Keep API credentials in your host's secret manager (not in git, not in plaintext docs).
+4. Enable TLS at the edge (reverse proxy / platform certs).
+5. Verify dashboard `Launch Readiness` panel shows no blockers.
+
+### Secret Storage Guidance
+
+For external API credentials (`SPACE_TRACK_USER`, `SPACE_TRACK_PASSWORD`, LLM provider keys, etc.), store them as runtime environment secrets in your deployment platform (Render/Fly/Railway/AWS/GCP/etc.). Do not commit real values into `.env` or the repository.
 
 ## Best Public TLE Accuracy (Space-Track)
 

@@ -207,3 +207,32 @@ def test_cdm_inbox_creates_and_dedupes_event():
 
     detail = client.get(f"/events/{event_id}").json()
     assert len(detail["updates"]) >= 2
+
+
+def test_webhook_security_validation_and_secret_masking():
+    login_business()
+
+    blocked = client.post(
+        "/webhooks",
+        json={"url": "https://127.0.0.1/hook", "event_type": "conjunction.changed"},
+    )
+    assert blocked.status_code == 400
+
+    created = client.post(
+        "/webhooks",
+        json={
+            "url": "http://localhost:9000/hook",
+            "event_type": "conjunction.changed",
+            "secret": "very-secret-token",
+        },
+    )
+    assert created.status_code == 200
+    data = created.json()
+    assert data["has_secret"] is True
+    assert "secret" not in data
+
+    listing = client.get("/webhooks")
+    assert listing.status_code == 200
+    items = listing.json()
+    assert any(item["id"] == data["id"] and item["has_secret"] for item in items)
+    assert all("secret" not in item for item in items)

@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class SourceCreate(BaseModel):
@@ -208,14 +208,25 @@ class RunbookOut(RunbookCreate):
 
 
 class WebhookCreate(BaseModel):
-    url: str
-    event_type: str = "event.created"
-    secret: Optional[str] = None
+    url: HttpUrl
+    event_type: Literal["conjunction.changed", "conjunction.created", "screening.completed"] = "conjunction.changed"
+    secret: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("secret")
+    @classmethod
+    def normalize_secret(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
-class WebhookOut(WebhookCreate):
+class WebhookOut(BaseModel):
     id: int
+    url: str
+    event_type: str
     active: bool
+    has_secret: bool = False
     created_at: datetime
 
     class Config:

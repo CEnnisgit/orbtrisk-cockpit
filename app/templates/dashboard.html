@@ -41,6 +41,38 @@
 
 <section class="panel">
   <div class="panel-header">
+    <h2>Launch Readiness</h2>
+    <span class="panel-sub">Security and configuration checks for production</span>
+  </div>
+  {% if readiness_ready %}
+    <div class="notice">
+      No launch blockers detected.
+    </div>
+  {% endif %}
+  {% if readiness_failures %}
+    <div class="notice">
+      <strong>Blocking issues</strong>
+      <ul class="risk-list">
+        {% for item in readiness_failures %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+  {% if readiness_warnings %}
+    <div class="notice">
+      <strong>Warnings</strong>
+      <ul class="risk-list">
+        {% for item in readiness_warnings %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-header">
     <h2>Start Here</h2>
     <span class="panel-sub">A simple path for first-time users</span>
   </div>

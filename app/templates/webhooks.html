@@ -9,6 +9,7 @@
   <div class="notice">
     Requests are signed with <span class="mono">X-Signature</span> (HMAC SHA256 of the JSON body).
     The server also sets <span class="mono">X-Event-Type</span> and <span class="mono">X-Webhook-Id</span>.
+    Only publicly routable webhook targets are allowed by default.
   </div>
 
   <form class="form" method="post" action="/webhooks-ui">
@@ -26,7 +27,7 @@
     </div>
     <div class="form-row">
       <label>Secret (optional)</label>
-      <input type="text" name="secret" placeholder="shared-secret-for-signature" />
+      <input type="text" name="secret" minlength="8" placeholder="shared-secret-for-signature" />
     </div>
     <button class="primary" type="submit">Add Webhook</button>
   </form>
@@ -67,4 +68,3 @@
   </div>
 </section>
 {% endblock %}
-

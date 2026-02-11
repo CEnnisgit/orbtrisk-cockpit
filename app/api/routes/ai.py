@@ -1,10 +1,10 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app import models
+from app import auth, models
 from app.database import get_db
 from app.services import llm_client, catalog_sync
 
@@ -72,7 +72,8 @@ def _citations(context: dict) -> List[str]:
 
 
 @router.post("/ai/object-summary")
-def object_summary(payload: SummaryRequest, db: Session = Depends(get_db)):
+def object_summary(request: Request, payload: SummaryRequest, db: Session = Depends(get_db)):
+    auth.require_business(request)
     context = _build_context(db, payload.object_id)
     try:
         data = llm_client.generate_summary(context)
@@ -86,7 +87,8 @@ def object_summary(payload: SummaryRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/ai/object-chat")
-def object_chat(payload: ChatRequest, db: Session = Depends(get_db)):
+def object_chat(request: Request, payload: ChatRequest, db: Session = Depends(get_db)):
+    auth.require_business(request)
     context = _build_context(db, payload.object_id)
     messages = [msg.model_dump() for msg in payload.messages]
     try:

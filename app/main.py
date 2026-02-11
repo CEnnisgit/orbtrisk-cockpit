@@ -1,4 +1,5 @@
 import math
+from hmac import compare_digest
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from urllib.parse import urlencode
@@ -9,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -28,6 +30,7 @@ from app.api.routes import (
 from app.database import get_db, init_db
 from app import models
 from app import auth
+from app import security
 from app.services import demo, propagation, catalog_sync
 from app.services import webhooks as webhook_service
 from app.settings import settings
@@ -56,12 +59,23 @@ templates = Jinja2Templates(directory="app/templates")
 async def add_template_globals(request: Request, call_next):
     request.state.is_business = auth.is_business(request)
 
+    def with_security_headers(response):
+        for key, value in security.security_headers().items():
+            response.headers.setdefault(key, value)
+        return response
+
     allow_prefixes = ("/static",)
     allow_paths = {"/auth/login", "/auth/logout", "/healthz"}
 
+    if request.state.is_business and settings.enforce_origin_check:
+        if not security.is_same_origin(request):
+            return with_security_headers(
+                JSONResponse(status_code=403, content={"detail": "Cross-site request blocked"})
+            )
+
     path = request.url.path
     if path in allow_paths or any(path.startswith(prefix) for prefix in allow_prefixes):
-        return await call_next(request)
+        return with_security_headers(await call_next(request))
 
     if not request.state.is_business:
         # UI pages redirect to login; APIs return JSON 403.
@@ -78,27 +92,36 @@ async def add_template_globals(request: Request, call_next):
         docs_paths = {"/docs", "/redoc", "/openapi.json"}
 
         if path in docs_paths:
-            return JSONResponse(status_code=403, content={"detail": "Business access required"})
+            return with_security_headers(
+                JSONResponse(status_code=403, content={"detail": "Business access required"})
+            )
 
         if path == "/" or any(path.startswith(prefix) for prefix in html_prefixes if prefix != "/"):
             next_path = request.url.path
             if request.url.query:
                 next_path = f"{next_path}?{request.url.query}"
-            return auth.login_redirect(next_path)
+            return with_security_headers(auth.login_redirect(next_path))
 
-        return JSONResponse(status_code=403, content={"detail": "Business access required"})
+        return with_security_headers(
+            JSONResponse(status_code=403, content={"detail": "Business access required"})
+        )
 
-    return await call_next(request)
+    return with_security_headers(await call_next(request))
 
 
 # SessionMiddleware must wrap this middleware so request.scope["session"]
 # is populated before auth checks.
+session_same_site = str(settings.session_same_site).lower()
+if session_same_site not in {"lax", "strict", "none"}:
+    session_same_site = "lax"
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
-    same_site="lax",
-    https_only=False,
+    same_site=session_same_site,
+    https_only=settings.resolved_session_https_only,
+    max_age=max(60, int(settings.session_max_age_seconds)),
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts_list)
 
 
 @app.get("/healthz")
@@ -109,10 +132,23 @@ def healthz():
 @app.get("/auth/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/dashboard"):
     configured = auth.business_access_configured(settings.business_access_code)
-    return templates.TemplateResponse(
+    safe_next = security.safe_next_path(next)
+    response = templates.TemplateResponse(
         "login.html",
-        {"request": request, "next": next, "configured": configured, "error": None},
+        {"request": request, "next": safe_next, "configured": configured, "error": None},
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _login_error_response(request: Request, next_path: str, configured: bool, error: str, status_code: int):
+    response = templates.TemplateResponse(
+        "login.html",
+        {"request": request, "next": next_path, "configured": configured, "error": error},
+        status_code=status_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/auth/login")
@@ -122,32 +158,42 @@ def login_submit(
     next: str = Form("/dashboard"),
 ):
     configured = auth.business_access_configured(settings.business_access_code)
+    safe_next = security.safe_next_path(next)
+    client_ip = security.get_client_ip(request)
+    if security.login_rate_limiter.is_limited(
+        client_ip,
+        max_attempts=max(1, int(settings.login_rate_limit_attempts)),
+        window_seconds=max(60, int(settings.login_rate_limit_window_seconds)),
+    ):
+        return _login_error_response(
+            request,
+            safe_next,
+            configured,
+            "Too many failed sign-in attempts. Try again in a few minutes.",
+            429,
+        )
+
     if not configured:
-        return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
-                "next": next,
-                "configured": configured,
-                "error": "Business login is not configured on this server.",
-            },
-            status_code=400,
+        return _login_error_response(
+            request,
+            safe_next,
+            configured,
+            "Business login is not configured on this server.",
+            400,
         )
 
-    if not access_code or access_code.strip() != (settings.business_access_code or "").strip():
-        return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
-                "next": next,
-                "configured": configured,
-                "error": "Invalid access code.",
-            },
-            status_code=401,
+    expected = (settings.business_access_code or "").strip()
+    provided = (access_code or "").strip()
+    if not provided or not compare_digest(provided, expected):
+        security.login_rate_limiter.record_failure(
+            client_ip,
+            window_seconds=max(60, int(settings.login_rate_limit_window_seconds)),
         )
+        return _login_error_response(request, safe_next, configured, "Invalid access code.", 401)
 
+    security.login_rate_limiter.clear(client_ip)
     request.session["role"] = "business"
-    return RedirectResponse(url=next or "/dashboard", status_code=303)
+    return RedirectResponse(url=safe_next or "/dashboard", status_code=303)
 
 
 @app.post("/auth/logout")
@@ -193,6 +239,31 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         .limit(10)
         .all()
     )
+    readiness_failures: list[str] = []
+    readiness_warnings: list[str] = []
+
+    session_secret = (settings.session_secret or "").strip()
+    if not auth.business_access_configured(settings.business_access_code):
+        readiness_failures.append("`BUSINESS_ACCESS_CODE` is not configured.")
+    if (not session_secret) or (session_secret == "dev-session-secret-change-me") or len(session_secret) < 32:
+        readiness_failures.append("`SESSION_SECRET` is weak; use at least 32 random characters.")
+    if not settings.resolved_session_https_only:
+        readiness_warnings.append("Secure session cookies are disabled (`SESSION_HTTPS_ONLY=true` recommended for live).")
+    if "*" in settings.trusted_hosts_list:
+        readiness_warnings.append("Trusted host checking is disabled (`TRUSTED_HOSTS_ALLOW_ALL=true`).")
+    if settings.webhook_allow_private_targets:
+        readiness_warnings.append("Webhook private-network targets are allowed (`WEBHOOK_ALLOW_PRIVATE_TARGETS=true`).")
+    if "http" in settings.webhook_allowed_schemes_set and not settings.webhook_allow_http_localhost:
+        readiness_warnings.append("Plain HTTP webhooks are enabled for non-local targets.")
+    if not (settings.space_track_user and settings.space_track_password):
+        readiness_warnings.append("Space-Track credentials are missing; TLE freshness may be lower.")
+    if last_sync is None:
+        readiness_warnings.append("Catalog has never been synced.")
+    else:
+        age_hours = (datetime.utcnow() - last_sync).total_seconds() / 3600.0
+        if age_hours > 48:
+            readiness_warnings.append(f"Latest catalog sync is stale ({age_hours:.1f}h old).")
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -203,6 +274,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
             "catalog_count": catalog_count,
             "last_sync": last_sync,
             "recent_events": recent_events,
+            "readiness_failures": readiness_failures,
+            "readiness_warnings": readiness_warnings,
+            "readiness_ready": not readiness_failures and not readiness_warnings,
         },
     )
 
@@ -218,6 +292,7 @@ def _require_business_ui(request: Request) -> None:
 
 @app.post("/catalog/sync-ui")
 def catalog_sync_ui(request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
     catalog_sync.sync_catalog(db, manual=True)
     return RedirectResponse(url="/dashboard?synced=1", status_code=303)
 
@@ -496,7 +571,8 @@ def event_detail_ui(event_id: int, request: Request, db: Session = Depends(get_d
 
 
 @app.post("/demo/seed")
-async def seed_demo_data(db: Session = Depends(get_db)):
+async def seed_demo_data(request: Request, db: Session = Depends(get_db)):
+    _require_business_ui(request)
     demo.seed_demo(db)
     db.commit()
     return RedirectResponse(url="/dashboard?seeded=1", status_code=303)
@@ -853,12 +929,20 @@ def webhooks_ui_post(
     secret: str = Form(None),
 ):
     _require_business_ui(request)
-    if not url or not event_type:
+    allowed_event_types = {"conjunction.changed", "conjunction.created", "screening.completed"}
+    if not url or not event_type or event_type not in allowed_event_types:
+        return RedirectResponse(url="/webhooks-ui", status_code=303)
+    normalized_secret = str(secret).strip() if secret and str(secret).strip() else None
+    if normalized_secret and len(normalized_secret) < 8:
+        return RedirectResponse(url="/webhooks-ui", status_code=303)
+    try:
+        target = security.validate_webhook_target(str(url).strip())
+    except HTTPException:
         return RedirectResponse(url="/webhooks-ui", status_code=303)
     hook = models.WebhookSubscription(
-        url=str(url).strip(),
+        url=target,
         event_type=str(event_type).strip(),
-        secret=str(secret).strip() if secret and str(secret).strip() else None,
+        secret=normalized_secret,
         active=True,
     )
     db.add(hook)
@@ -918,6 +1002,7 @@ def decide_ui(
     override_reason: str = Form(None),
     checklist: Optional[list[str]] = Form(None),
 ):
+    _require_business_ui(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event or not approved_by:
         return RedirectResponse(url=f"/events-ui?event_id={event_id}", status_code=303)
@@ -951,6 +1036,7 @@ def event_status_ui(
     db: Session = Depends(get_db),
     status: str = Form("open"),
 ):
+    _require_business_ui(request)
     event = db.get(models.ConjunctionEvent, event_id)
     if not event:
         return RedirectResponse(url=f"/events-ui?event_id={event_id}", status_code=303)
