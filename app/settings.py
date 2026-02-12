@@ -111,10 +111,22 @@ class Settings(BaseSettings):
         for token in (self.trusted_hosts or "").split(","):
             add_host(token)
 
+        local_only_defaults = {"localhost", "127.0.0.1", "testserver"}
+        trusted_has_non_local_host = any(host not in local_only_defaults for host in normalized if host != "*")
+
         for origin in self.allowed_origins_list:
             add_host(origin)
 
         add_host(self.render_external_hostname or "")
+
+        # Safety fallback for Render: if host config was left as local defaults only,
+        # fail open instead of bricking the public deployment with 400 errors.
+        if (
+            self.render_external_hostname
+            and not trusted_has_non_local_host
+            and not self.allowed_origins_list
+        ):
+            return ["*"]
 
         for local in ("localhost", "127.0.0.1", "testserver"):
             if local not in normalized:

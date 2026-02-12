@@ -59,3 +59,16 @@ def test_trusted_hosts_allow_all_short_circuit():
         assert settings.trusted_hosts_list == ["*"]
     finally:
         _restore_settings(snapshot)
+
+
+def test_render_fallback_prevents_host_lockout_when_unconfigured():
+    snapshot = _snapshot_settings()
+    try:
+        settings.trusted_hosts_allow_all = False
+        settings.trusted_hosts = "localhost,127.0.0.1,testserver"
+        settings.allowed_origins = None
+        settings.render_external_hostname = "orbitrisk.onrender.com"
+
+        assert settings.trusted_hosts_list == ["*"]
+    finally:
+        _restore_settings(snapshot)
