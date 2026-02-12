@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import auth, models
 from app.database import get_db
 from app.services import catalog_sync
 
@@ -26,7 +26,6 @@ def sync_catalog_if_due(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/catalog/status")
 def catalog_status(request: Request, db: Session = Depends(get_db)):
-    auth.require_business(request)
     return catalog_sync.catalog_status(db)
 
 
@@ -39,16 +38,35 @@ def catalog_objects(
     offset: int = Query(default=0, ge=0),
     show: str = Query(default="catalog"),
 ):
-    auth.require_business(request)
+    is_business = auth.is_business(request)
+
     if limit is None:
-        return catalog_sync.catalog_objects(db)
+        data = catalog_sync.catalog_objects(db)
+        if is_business:
+            return data
+
+        items = [item for item in data.get("items", []) if not bool(item.get("is_operator_asset"))]
+        total = (
+            db.query(models.SpaceObject)
+            .filter(models.SpaceObject.is_operator_asset.is_(False))
+            .count()
+        )
+        return {
+            "items": items,
+            "total": total,
+            "missing_tle": max(0, int(total) - len(items)),
+        }
 
     is_operator_asset = None
     if show == "catalog":
         is_operator_asset = False
     elif show == "operator":
+        if not is_business:
+            raise HTTPException(status_code=403, detail="Business access required")
         is_operator_asset = True
     elif show == "all":
+        if not is_business:
+            raise HTTPException(status_code=403, detail="Business access required")
         is_operator_asset = None
     else:
         raise HTTPException(status_code=400, detail="show must be catalog, operator, or all")

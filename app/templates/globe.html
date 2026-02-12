@@ -115,7 +115,9 @@
             <button id="globeResetBtn" class="secondary" type="button">Reset View</button>
             <button id="globeZoomInBtn" class="secondary" type="button">Zoom In</button>
             <button id="globeZoomOutBtn" class="secondary" type="button">Zoom Out</button>
-            <button id="globeSyncBtn" class="secondary" type="button">Sync TLEs</button>
+            {% if request.state.is_business %}
+              <button id="globeSyncBtn" class="secondary" type="button">Sync TLEs</button>
+            {% endif %}
           </div>
 
           <div class="globe-toggles">

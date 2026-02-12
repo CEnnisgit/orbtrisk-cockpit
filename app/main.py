@@ -66,6 +66,16 @@ async def add_template_globals(request: Request, call_next):
 
     allow_prefixes = ("/static",)
     allow_paths = {"/auth/login", "/auth/logout", "/healthz"}
+    public_ui_paths = {"/", "/dashboard", "/events-ui"}
+    public_ui_prefixes = ("/events-ui/",)
+    public_api_paths = {"/catalog/status", "/catalog/objects", "/solar/positions"}
+    business_ui_prefixes = (
+        "/satellites-ui",
+        "/ingest-ui",
+        "/catalog-ui",
+        "/audit-ui",
+        "/webhooks-ui",
+    )
 
     if request.state.is_business and settings.enforce_origin_check:
         if not security.is_same_origin(request):
@@ -78,17 +88,6 @@ async def add_template_globals(request: Request, call_next):
         return with_security_headers(await call_next(request))
 
     if not request.state.is_business:
-        # UI pages redirect to login; APIs return JSON 403.
-        html_prefixes = (
-            "/",
-            "/dashboard",
-            "/events-ui",
-            "/satellites-ui",
-            "/ingest-ui",
-            "/catalog-ui",
-            "/audit-ui",
-            "/webhooks-ui",
-        )
         docs_paths = {"/docs", "/redoc", "/openapi.json"}
 
         if path in docs_paths:
@@ -96,7 +95,13 @@ async def add_template_globals(request: Request, call_next):
                 JSONResponse(status_code=403, content={"detail": "Business access required"})
             )
 
-        if path == "/" or any(path.startswith(prefix) for prefix in html_prefixes if prefix != "/"):
+        if path in public_ui_paths or any(path.startswith(prefix) for prefix in public_ui_prefixes):
+            return with_security_headers(await call_next(request))
+
+        if path in public_api_paths:
+            return with_security_headers(await call_next(request))
+
+        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in business_ui_prefixes):
             next_path = request.url.path
             if request.url.query:
                 next_path = f"{next_path}?{request.url.query}"

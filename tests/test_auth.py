@@ -34,8 +34,29 @@ def test_unauthenticated_events_forbidden():
 
 def test_unauthenticated_dashboard_redirect():
     resp = client.get("/dashboard", follow_redirects=False)
+    assert resp.status_code == 200
+
+
+def test_unauthenticated_map_and_events_ui_accessible():
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 200
+
+    resp = client.get("/events-ui", follow_redirects=False)
+    assert resp.status_code == 200
+
+
+def test_unauthenticated_business_ui_redirects_to_login():
+    resp = client.get("/satellites-ui", follow_redirects=False)
     assert resp.status_code in (303, 307)
     assert resp.headers.get("location", "").startswith("/auth/login")
+
+
+def test_unauthenticated_public_catalog_endpoints_accessible():
+    resp = client.get("/catalog/status")
+    assert resp.status_code == 200
+
+    resp = client.get("/catalog/objects")
+    assert resp.status_code == 200
 
 
 def test_login_next_path_is_sanitized():
