@@ -1,4 +1,5 @@
 from typing import Optional
+from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
     business_access_code: Optional[str] = None
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     trusted_hosts_allow_all: bool = False
+    render_external_hostname: Optional[str] = None
     trust_proxy_headers: bool = False
     enforce_origin_check: bool = True
     allowed_origins: Optional[str] = None
@@ -75,12 +77,50 @@ class Settings(BaseSettings):
             return bool(self.session_https_only)
         return self.is_production
 
+    @staticmethod
+    def _normalize_host_token(token: str) -> Optional[str]:
+        raw = (token or "").strip()
+        if not raw:
+            return None
+        if raw == "*":
+            return raw
+        if raw.startswith("*."):
+            return raw.lower()
+
+        candidate = raw
+        if "://" not in candidate:
+            candidate = f"http://{candidate}"
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return None
+        return host
+
     @property
     def trusted_hosts_list(self) -> list[str]:
         if self.trusted_hosts_allow_all:
             return ["*"]
-        hosts = [h.strip() for h in (self.trusted_hosts or "").split(",") if h.strip()]
-        return hosts or ["localhost", "127.0.0.1", "testserver"]
+
+        normalized: list[str] = []
+
+        def add_host(token: str) -> None:
+            host = self._normalize_host_token(token)
+            if host and host not in normalized:
+                normalized.append(host)
+
+        for token in (self.trusted_hosts or "").split(","):
+            add_host(token)
+
+        for origin in self.allowed_origins_list:
+            add_host(origin)
+
+        add_host(self.render_external_hostname or "")
+
+        for local in ("localhost", "127.0.0.1", "testserver"):
+            if local not in normalized:
+                normalized.append(local)
+
+        return normalized or ["localhost", "127.0.0.1", "testserver"]
 
     @property
     def allowed_origins_list(self) -> list[str]:
