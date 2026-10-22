@@ -1,4 +1,4 @@
-# SpaceProject MVP
+# orbtrisk-cockpit
 
 A minimal FastAPI implementation of an **operator-first orbital conjunction decision-support tool**. This repository provides:
 
